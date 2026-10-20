@@ -6,7 +6,7 @@ import os from 'node:os';import fs from 'node:fs';import path from 'node:path';
 import bcrypt from 'bcryptjs';import sharp from 'sharp';import { eq,and,desc,isNull,inArray,sql,count } from 'drizzle-orm';import { z } from 'zod';
 import {db} from './db.js';import {users,sessions,apiKeys,requirements,cases,casePrompts,media,requirementMedia,caseMedia,categories,reviews,auditLogs,caseEvents,tags,requirementTags,caseTags,files,requirementFiles,caseFiles} from './schema.js';
 import {registerLists} from './lists.js';
-import {encryptKey,decryptKey,keyStorageReady,scopes,agentScopes,taxonomyScopes,requiredScope} from './key-security.js';
+import {scopes,agentScopes,taxonomyScopes,requiredScope} from './key-security.js';
 import {proxyBoundary,authRateLimit} from './auth-rate-limit.js';
 import { registerUserRoutes } from './routes/users.js';
 const app=new Koa();app.proxy=true;app.use(proxyBoundary);const r=new Router({prefix:'/api'});
@@ -57,7 +57,7 @@ const registerSchema=z.object({email:z.string().trim().email().max(254),password
 const keyInput=z.object({scopes:z.array(z.enum(scopes)).min(1).max(scopes.length).default(agentScopes as typeof scopes[number][]),expiresInDays:z.number().int().min(1).max(90).default(30)});
 function keyRecord(userId:string,name:string,grants:string[],days:number){
   const secret='wk_'+randomBytes(32).toString('base64url'),keyId=id();
-  return {secret,record:{id:keyId,userId,name,prefix:secret.slice(0,12),hash:hash(secret),secretEncrypted:encryptKey(secret,keyId),scopes:JSON.stringify([...new Set(grants)]),expiresAt:now()+days*86400,createdAt:now()}};
+  return {secret,record:{id:keyId,userId,name,prefix:secret.slice(0,12),hash:hash(secret),secretValue:secret,scopes:JSON.stringify([...new Set(grants)]),expiresAt:now()+days*86400,createdAt:now()}};
 }
 const issueKey=(userId:string)=>{const {secret,record}=keyRecord(userId,'Agent skill',agentScopes,30);db.insert(apiKeys).values(record).run();return secret;};
 const sessionCookie=(ctx:Koa.Context,userId:string)=>{const secret=randomBytes(32).toString('base64url');db.insert(sessions).values({idHash:hash(secret),userId,expiresAt:now()+604800}).run();ctx.cookies.set('jack_session',secret,{httpOnly:true,sameSite:'lax',signed:true,secure:process.env.NODE_ENV==='production',maxAge:604800000});};
@@ -72,7 +72,7 @@ r.post('/auth/register',async ctx=>{
   const userId=id();
   // No awaits between duplicate check and insert; concurrent registrations cannot race it.
   db.insert(users).values({id:userId,email,passwordHash,createdAt:now()}).run();sessionCookie(ctx,userId);
-  ctx.status=201;ctx.body={user:{id:userId,email,role:'student'},apiKey:keyStorageReady?issueKey(userId):null};
+  ctx.status=201;ctx.body={user:{id:userId,email,role:'student'},apiKey:issueKey(userId)};
 });
 r.post('/auth/login',async ctx=>{
   ctx.set('Cache-Control','no-store');authRateLimit(ctx);if(process.env.NODE_ENV==='production'&&!ctx.secure)bad('HTTPS required for authentication',400);const d=registerSchema.parse(ctx.request.body);
@@ -89,8 +89,8 @@ r.get('/keys',async ctx=>{
   const a=await sessionActor(ctx);
   ctx.body=db.select().from(apiKeys).where(eq(apiKeys.userId,a.id)).all().map(k=>({
     id:k.id,name:k.name,prefix:k.prefix,createdAt:k.createdAt,revokedAt:k.revokedAt,lastUsedAt:k.lastUsedAt,
-    scopes:k.scopes===null?null:JSON.parse(k.scopes),expiresAt:k.expiresAt,legacy:k.scopes===null,storageReady:keyStorageReady,
-    secretValue:!k.revokedAt&&(!k.expiresAt||k.expiresAt>now())&&k.secretEncrypted?decryptKey(k.secretEncrypted,k.id):null
+    scopes:k.scopes===null?null:JSON.parse(k.scopes),expiresAt:k.expiresAt,legacy:k.scopes===null,
+    secretValue:!k.revokedAt&&(!k.expiresAt||k.expiresAt>now())?k.secretValue:null
   }));
 });
 r.post('/keys/rotate',async ctx=>{

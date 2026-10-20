@@ -14,7 +14,7 @@ cp .env.example .env
 npm install
 npm run dev
 ```
-打开 http://localhost:5173 。生产环境分别运行 `npm run build` 与 `npm start`；生产环境应通过 nginx 或其他反向代理统一提供前端静态文件、HTTPS 和 `/api` 反代。生产前必须设置 SESSION_SECRET、API_KEY_ENCRYPTION_KEY、固定的数据库与文件目录，配置备份。密钥配置与升级步骤见 [认证与密钥运维](ops/AUTH-SECURITY.md)。
+打开 http://localhost:5173 。生产环境分别运行 `npm run build` 与 `npm start`；生产环境应通过 nginx 或其他反向代理统一提供前端静态文件、HTTPS 和 `/api` 反代。生产前必须设置 SESSION_SECRET、固定的数据库与文件目录，配置备份。API Key 明文保存在数据库中，因此数据库及其备份必须限制访问。密钥管理说明见 [认证与密钥运维](ops/AUTH-SECURITY.md)。
 
 > 当前 schema 已建立 Drizzle 基线，启动与 `npm run db:migrate` 使用同一迁移 runner。支持存量自举库接纳及历史编号回填，保留正文、UUID、媒体和文件关联；升级前需备份。
 
@@ -31,7 +31,7 @@ node -e "const Database=require('better-sqlite3');const db=new Database('./stora
 替换邮箱为自己的邮箱，并重新登录。此操作必须在有数据库访问权限的服务器执行。
 
 ## API
-`POST /api/auth/register` `{email,password}` 创建账号和 HttpOnly cookie；配置稳定的 `API_KEY_ENCRYPTION_KEY` 后同时生成默认 30 天的普通 Agent `apiKey`，未配置时返回 `apiKey: null`，账号仍可登录。
+`POST /api/auth/register` `{email,password}` 创建账号和 HttpOnly cookie，并生成默认 30 天的普通 Agent `apiKey`。
 
 只有浏览器会话可调用 `GET /api/keys`、`POST /api/keys/rotate`、`POST /api/keys/taxonomy` 和 `DELETE /api/keys/:id`；Bearer（包括旧 Key）不能管理密钥。`rotate` 接受 `{scopes,expiresInDays}`（1–90 天，默认 30），会立即撤销本账号全部旧 Key，事务创建新 Key。登录后可在「Agent 技能」页再次复制有效 Key。管理员可在管理技能页独立生成仅具备分类标签权限的 Key，不继承用户管理权限。
 

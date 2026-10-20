@@ -105,8 +105,9 @@ r.post('/keys/rotate',async ctx=>{
 // Dedicated taxonomy key does not replace the ordinary Agent key. Only cookie-authenticated admins can create it.
 r.post('/keys/taxonomy',async ctx=>{
   const a=await sessionActor(ctx);taxonomyEditor(a);
-  const d=z.object({expiresInDays:z.number().int().min(1).max(90).default(30)}).parse(ctx.request.body);
-  const {secret,record}=keyRecord(a.id,'Taxonomy skill',taxonomyScopes,d.expiresInDays);
+  const d=z.object({expiresInDays:z.number().int().min(1).max(90).default(30),permanent:z.boolean().default(false)}).parse(ctx.request.body);
+  const {secret,record:generated}=keyRecord(a.id,'Taxonomy skill',taxonomyScopes,d.expiresInDays);
+  const record={...generated,expiresAt:d.permanent?null:generated.expiresAt};
   db.transaction(tx=>{
     const previous=tx.select().from(apiKeys).where(and(eq(apiKeys.userId,a.id),eq(apiKeys.name,'Taxonomy skill'),isNull(apiKeys.revokedAt))).all();
     for(const k of previous)tx.update(apiKeys).set({revokedAt:now(),secretValue:null,secretEncrypted:null}).where(eq(apiKeys.id,k.id)).run();

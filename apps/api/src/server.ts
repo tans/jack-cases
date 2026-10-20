@@ -8,6 +8,7 @@ import {db} from './db.js';import {users,sessions,apiKeys,requirements,cases,cas
 import {registerLists} from './lists.js';
 import {encryptKey,decryptKey,keyStorageReady,scopes,agentScopes,taxonomyScopes,requiredScope} from './key-security.js';
 import {proxyBoundary,authRateLimit} from './auth-rate-limit.js';
+import { registerUserRoutes } from './routes/users.js';
 const app=new Koa();app.proxy=true;app.use(proxyBoundary);const r=new Router({prefix:'/api'});
 const deployedCommitFile=process.env.DEPLOYED_COMMIT_FILE;
 r.get('/health',ctx=>{let commit:string|null=null;if(deployedCommitFile){try{commit=fs.readFileSync(deployedCommitFile,'utf8').trim()||null;}catch{}}ctx.body={ok:true,commit};});
@@ -252,30 +253,7 @@ r.patch('/cases/:id',async ctx=>{const a=await actor(ctx);admin(a);const c=caseD
 r.post('/requirements/:id/review',async ctx=>{const a=await actor(ctx);admin(a);const req=db.select().from(requirements).where(eq(requirements.id,ctx.params.id)).get();if(!req)bad('Not found',404);const d=z.object({approvedFileIds:fileIdsInput.default([]),decision:z.enum(['approve','reject']),notes:z.string().trim().max(3000).default(''),title:z.string().min(2).optional(),summary:z.string().min(5).optional(),requirementPrompt:z.string().optional(),buildPrompt:z.string().optional(),approvedMediaIds:z.array(z.string()).default([])}).parse(ctx.request.body);if(d.decision==='reject'&&!d.notes)bad('请填写具体退回原因');if(d.decision==='approve'&&!req.shareConsent)bad('Sharing consent required',409);const originals=db.select().from(requirementMedia).where(eq(requirementMedia.requirementId,req.id)).all().map(x=>x.mediaId);if(d.approvedMediaIds.some(x=>!originals.includes(x)))bad('Only linked images can be approved');const linkedFiles=filesFor('requirement',req.id).map(f=>f.id);if(d.approvedFileIds.some(f=>!linkedFiles.includes(f)))bad('Only linked files can be approved');const caseId=id();db.transaction(tx=>{const changed=tx.update(requirements).set({status:d.decision==='approve'?'published':'rejected'}).where(and(eq(requirements.id,req.id),eq(requirements.status,'submitted'))).run();if(!changed.changes)bad('仅待审核的需求可以审核，请刷新状态',409);tx.insert(reviews).values({id:id(),requirementId:req.id,reviewerId:a.id,decision:d.decision,notes:d.notes,createdAt:now()}).run();if(d.decision==='approve'){tx.insert(cases).values({id:caseId,requirementId:req.id,requirementCode:req.requirementCode,contentVersion:req.contentVersion,coverMediaId:d.approvedMediaIds.includes(req.coverMediaId??'')?req.coverMediaId:d.approvedMediaIds[0]??null,publicContent:d.requirementPrompt??d.summary??'待补充',title:d.title??req.title,summary:d.summary??req.content.slice(0,220),categoryId:req.categoryId,industry:req.industry,department:req.department,difficulty:req.difficulty,implementationStatus:req.implementationStatus,status:'published',publishedAt:now(),createdAt:now()}).run();for(const [type,content] of [['requirement',d.requirementPrompt??''],['build',d.buildPrompt??'']])tx.insert(casePrompts).values({id:id(),caseId,type,content}).run();tx.select().from(requirementTags).where(eq(requirementTags.requirementId,req.id)).all().forEach(t=>tx.insert(caseTags).values({caseId,tagId:t.tagId}).run());d.approvedFileIds.forEach(fileId=>tx.insert(caseFiles).values({caseId,fileId,approved:true}).run());d.approvedMediaIds.forEach((mediaId,i)=>{tx.update(media).set({status:'approved'}).where(eq(media.id,mediaId)).run();tx.insert(caseMedia).values({caseId,mediaId,sortOrder:i}).run();});}});audit(a,d.decision,'requirement',req.id);ctx.body={ok:true,caseId:d.decision==='approve'?caseId:null};});
 r.post('/cases/:id/status',async ctx=>{const a=await actor(ctx);admin(a);const c=db.select().from(cases).where(eq(cases.id,ctx.params.id)).get();if(!c)bad('Not found',404);const d=z.object({status:z.enum(['published','draft','archived'])}).parse(ctx.request.body);if(d.status==='published'&&c.requirementId){const source=db.select().from(requirements).where(eq(requirements.id,c.requirementId)).get();if(!source?.shareConsent)bad('Sharing consent required',409);}db.update(cases).set({status:d.status,publishedAt:d.status==='published'?now():c.publishedAt}).where(eq(cases.id,c.id)).run();audit(a,'status:'+d.status,'case',c.id);ctx.body={ok:true};});
 r.post('/cases/:id/copy-events',async ctx=>{const a=await actor(ctx);const c=caseDetail(ctx.params.id,a);const d=z.object({type:z.enum(['copy_requirement','copy_build'])}).parse(ctx.request.body);db.insert(caseEvents).values({id:id(),caseId:c.id,userId:a.id,type:d.type,createdAt:now()}).run();ctx.body={ok:true};});
-r.patch('/users/:id',async ctx=>{
-  const a=await actor(ctx);
-  const d=z.object({status:z.enum(['active','disabled']).optional(),role:z.enum(['student','reviewer','admin']).optional()}).parse(ctx.request.body);
-  db.transaction(tx=>{
-    // Re-read after taking the write lock: concurrent demotion/disable must revoke authority.
-    const current=tx.select().from(users).where(eq(users.id,a.id)).get();
-    if(!current||current.status!=='active')bad('Unauthorized',401);
-    if(!['admin','super_admin'].includes(current.role))bad('Forbidden',403);
-    const target=tx.select().from(users).where(eq(users.id,ctx.params.id)).get();
-    if(!target)bad('User not found',404);
-    const removesAccess=d.status==='disabled'||!!(d.role&&d.role!==target.role);
-    if(target.role==='super_admin'&&target.status==='active'&&removesAccess){
-      const activeSupers=tx.select({total:count()}).from(users).where(and(eq(users.role,'super_admin'),eq(users.status,'active'))).get()!.total;
-      if(activeSupers<=1)bad('Cannot remove the last active super_admin',409);
-    }
-    if(current.id===target.id&&removesAccess)bad('Cannot remove own access');
-    if(current.role==='admin'&&!['student','reviewer'].includes(target.role))bad('Admins may only manage lower roles',403);
-    if(d.role&&current.role!=='super_admin')bad('Only super_admin may change roles',403);
-    if(!d.status&&!d.role)bad('No user changes provided');
-    tx.update(users).set(d).where(eq(users.id,target.id)).run();
-    tx.insert(auditLogs).values({id:id(),actorId:current.id,action:'update',resourceType:'user',resourceId:target.id,createdAt:now()}).run();
-  },{behavior:'immediate'});
-  ctx.body={ok:true};
-});
+registerUserRoutes(r,{actor,bad,id,now});
 r.get('/stats',async ctx=>{const a=await actor(ctx);admin(a);ctx.body={users:db.select({total:count()}).from(users).get()!.total,requirements:db.select({total:count()}).from(requirements).get()!.total,cases:db.select({total:count()}).from(cases).get()!.total,pending:db.select({total:count()}).from(requirements).where(eq(requirements.status,'submitted')).get()!.total};});
 r.get('/audit-logs',async ctx=>{const a=await actor(ctx);admin(a);ctx.body=db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(200).all();});
 app.use(r.routes()).use(r.allowedMethods());

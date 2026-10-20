@@ -1,3 +1,7 @@
+import AdminUsers from './pages/admin-users';
+import { Panel } from './components/panel';
+import { useData } from './hooks/use-data';
+import type { User } from './types';
 import {DraftUser,useLocalDraft} from './drafts';
 import {privatePayload,publicationPayload} from './lib/draft-storage';
 import {ErrorLine,QueryFeedback,statusLabel} from './feedback';
@@ -15,7 +19,7 @@ import {Materials,MaterialList,RequirementDownloads,type Material} from './mater
 import React,{useEffect,useLayoutEffect,useState} from 'react';import{Link,NavLink,Navigate,Route,Routes,useNavigate,useParams,useLocation}from'react-router-dom';import{QueryClientProvider,useQuery,useQueryClient}from'@tanstack/react-query';import{LayoutDashboard,ClipboardList,BookOpen,Users,Images,Bot,FolderTree,Plus,Grid2X2,List as ListIcon,Search,LogOut,Copy,Check,ShieldCheck,Upload,ChevronRight,ChevronDown,RefreshCw}from'lucide-react';
 import{api,post,patch,currentUser,copyText,errorMessage}from'./lib/api';import{Button}from'./components/ui/button';import{Input}from'./components/ui/input';import{Textarea}from'./components/ui/textarea';import{Card,CardContent}from'./components/ui/card';
 
-type User={id:string;email:string;role:string};type Review={id:string;decision:string;notes:string;createdAt:number};type Requirement={reviews?:Review[];submissions?:{id:string;createdAt:number}[];id:string;coverMediaId?:string|null;requirementCode?:string;contentVersion?:string;files:Material[];title:string;content:string;status:string;shareConsent:boolean;categoryId?:string|null;industry?:string;department?:string;difficulty?:string;implementationStatus?:string;expectedOutcome?:string;createdAt?:number;tags?:Tag[];images:{id:string;url:string}[]};type Tag={id:string;name:string;slug:string;group:string;color:string;active:boolean;sortOrder:number};type Case={id:string;coverMediaId?:string|null;requirementId?:string|null;publicContent?:string;requirementCode?:string;contentVersion?:string;files?:Material[];title:string;summary:string;status:string;categoryId?:string;industry?:string;department?:string;difficulty?:string;implementationStatus?:string;tags?:Tag[];prompts?:{type:string;content:string}[];images?:{id:string;url:string}[]};
+type Review={id:string;decision:string;notes:string;createdAt:number};type Requirement={reviews?:Review[];submissions?:{id:string;createdAt:number}[];id:string;coverMediaId?:string|null;requirementCode?:string;contentVersion?:string;files:Material[];title:string;content:string;status:string;shareConsent:boolean;categoryId?:string|null;industry?:string;department?:string;difficulty?:string;implementationStatus?:string;expectedOutcome?:string;createdAt?:number;tags?:Tag[];images:{id:string;url:string}[]};type Tag={id:string;name:string;slug:string;group:string;color:string;active:boolean;sortOrder:number};type Case={id:string;coverMediaId?:string|null;requirementId?:string|null;publicContent?:string;requirementCode?:string;contentVersion?:string;files?:Material[];title:string;summary:string;status:string;categoryId?:string;industry?:string;department?:string;difficulty?:string;implementationStatus?:string;tags?:Tag[];prompts?:{type:string;content:string}[];images?:{id:string;url:string}[]};
 function embeddedBusinessCategory(content:string){return content.match(/(?:^|\n)\s*业务分类\s*[：:]\s*([^\n]+)/)?.[1]?.trim()??'';}
 function requirementSection(content:string,title:string){const escaped=title.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');return content.match(new RegExp(`(?:^|\\n)\\s*\\d+\\.\\s*${escaped}[^\\n]*\\n([\\s\\S]*?)(?=\\n\\s*\\d+\\.\\s|$)`))?.[1]?.replace(/\s+/g,' ').trim()??'';}
 function requirementCategory(item:Requirement,categories:Category[]){return categories.find(category=>category.id===item.categoryId)?.name||embeddedBusinessCategory(item.content);}
@@ -23,8 +27,6 @@ function splitValues(value?:string){return(value??'').split(/[、,，/]/).map(it
 const reviewStatusLabels:Record<string,string>={submitted:'待审核',published:'已发布',rejected:'已退回',draft:'草稿'};
 const difficultyLabels:Record<string,string>={easy:'简单',medium:'中等',hard:'复杂'};
 const implementationStatusLabels:Record<string,string>={pending:'待实现',building:'开发中',completed:'已实现',verified:'已验证'};
-function useData<T>(key:string,url:string){return useQuery<T>({queryKey:[key,url],queryFn:({signal})=>api(url,{signal}),retry:false},url==='/categories'||url==='/tags'?publicClient:undefined);}
-function Panel({title,children,action}:{title:string;children:React.ReactNode;action?:React.ReactNode}){return <div className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold tracking-tight">{title}</h1>{action}</div>{children}</div>;}
 const MarkdownRenderer=React.lazy(async()=>{const[{default:ReactMarkdown},{default:remarkGfm}]=await Promise.all([import('react-markdown'),import('remark-gfm')]);return{default:({content}:{content:string})=><div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>{content}</ReactMarkdown></div>};});
 function Markdown({content}:{content:string}){return <React.Suspense fallback={<p className="text-sm text-slate-500">正在载入富文本…</p>}><MarkdownRenderer content={content}/></React.Suspense>;}
 const brand='/brand/';
@@ -170,29 +172,6 @@ function Keys(){
  </div></Panel>;
 }
 function AdminCases(){const{items:data,controls}=usePage<Case>('admin-cases','/cases?scope=all');const qc=useQueryClient();const[title,setTitle]=useState(''),[summary,setSummary]=useState(''),[requirementPrompt,setRequirementPrompt]=useState(''),[buildPrompt,setBuildPrompt]=useState('');const[editing,setEditing]=useState<Case|null>(null);const[error,setError]=useState('');return <Panel title="案例管理"><Card><CardContent className="space-y-3"><h2 className="font-medium">{editing?'编辑案例':'新建独立案例'}</h2><Input placeholder="案例标题" value={title} onChange={e=>setTitle(e.target.value)}/><Textarea placeholder="脱敏后的公开简介" value={summary} onChange={e=>setSummary(e.target.value)}/><Textarea placeholder="需求提示词" value={requirementPrompt} onChange={e=>setRequirementPrompt(e.target.value)}/><Textarea placeholder="搭建提示词" value={buildPrompt} onChange={e=>setBuildPrompt(e.target.value)}/><ErrorLine error={error}/>{editing&&<><CaseImages key={editing.id+'-images'} item={editing}/><CaseMaterials key={editing.id} item={editing}/></>}<Button onClick={async()=>{setError('');try{if(editing)await patch('/cases/'+editing.id,{title,summary,requirementPrompt,buildPrompt});else await post('/cases',{title,summary,requirementPrompt,buildPrompt});setEditing(null);setTitle('');setSummary('');setRequirementPrompt('');setBuildPrompt('');qc.invalidateQueries();}catch(e:any){setError(errorMessage(e));}}}>保存草稿</Button></CardContent></Card>{controls}{data.map(c=><Card key={c.id}><CardContent className="flex flex-wrap justify-between gap-3"><div><b>{c.title}</b><p className="text-sm text-slate-500">{statusLabel(c.status)}</p></div><div className="flex gap-2"><Button variant="outline" size="sm" onClick={async()=>{const full=await api<Case>('/cases/'+c.id);setEditing(full);setTitle(full.title);setSummary(full.summary);setRequirementPrompt(full.prompts?.find(p=>p.type==='requirement')?.content??'');setBuildPrompt(full.prompts?.find(p=>p.type==='build')?.content??'');window.scrollTo(0,0);}}>编辑</Button><Button size="sm" onClick={async()=>{await post('/cases/'+c.id+'/status',{status:c.status==='published'?'archived':'published'});qc.invalidateQueries();}}>{c.status==='published'?'下架':'发布'}</Button></div></CardContent></Card>)}</Panel>;}
-function AdminUsers({user}:{user:User}){
-  const{items:data,controls}=usePage<any>('users','/users');const qc=useQueryClient();
-  const[pending,setPending]=useState<string|null>(null);
-  const roleLabels:Record<string,string>={student:'学员',reviewer:'审核员',admin:'管理员',super_admin:'超级管理员'};
-  const facetsQuery=useData<{activeSupers:number}>('users','/users/facets');const{data:facets}=facetsQuery;
-  const activeSupers=facets?.activeSupers??0;
-  const restriction=(u:any)=>{
-    if(u.role==='super_admin'&&u.status==='active'&&activeSupers<=1)return '须保留最后一名启用的超级管理员';
-    if(u.id===user.id)return '不能移除自己的访问权限';
-    if(user.role==='admin'&&!['student','reviewer'].includes(u.role))return '管理员只能管理学员和审核员';
-    if(!['admin','super_admin'].includes(user.role))return '仅管理员可管理用户';
-    return '';
-  };
-  const update=async(u:any,changes:{role?:string;status?:string})=>{
-    setPending(u.id);
-    try{await patch('/users/'+u.id,changes);}catch(error:any){alert(errorMessage(error));}
-    finally{await qc.invalidateQueries({queryKey:['users']});setPending(null);}
-  };
-  return <Panel title="用户管理"><QueryFeedback query={facetsQuery} label="角色保护状态"/>{controls}<Card><CardContent className="overflow-auto"><table className="w-full min-w-[640px] text-sm"><thead><tr className="text-left border-b"><th className="py-3">用户邮箱</th><th>角色</th><th>状态</th><th>管理</th></tr></thead><tbody>{data.map(u=>{
-    const reason=restriction(u);const hintId=`user-restriction-${u.id}`;
-    return <tr key={u.id} className="border-b"><td className="py-3">{u.email}</td><td>{user.role==='super_admin'?<select aria-label={`修改 ${u.email} 的角色`} aria-describedby={reason?hintId:undefined} disabled={!!reason||pending!==null} className="rounded-md border border-slate-300 bg-white px-2 py-1.5 disabled:opacity-50" value={u.role} onChange={e=>update(u,{role:e.target.value})}><option value="student">学员</option><option value="reviewer">审核员</option><option value="admin">管理员</option>{u.role==='super_admin'&&<option value="super_admin" disabled>超级管理员</option>}</select>:roleLabels[u.role]??u.role}</td><td>{statusLabel(u.status)}</td><td className="py-3"><Button size="sm" variant="outline" disabled={!!reason||pending!==null} aria-describedby={reason?hintId:undefined} onClick={()=>{if(confirm('确认修改用户状态？'))void update(u,{status:u.status==='active'?'disabled':'active'});}}>{pending===u.id?'保存中…':u.status==='active'?'禁用':'启用'}</Button>{reason&&<p id={hintId} className="mt-1 max-w-52 text-xs text-slate-600">{reason}</p>}</td></tr>;
-  })}</tbody></table></CardContent></Card></Panel>;
-}
 function AdminMedia(){
  const qc=useQueryClient();const[uploads,setUploads]=useState<Material[]>([]),[fileSearch,setFileSearch]=useState(''),[filePurpose,setFilePurpose]=useState('');
  const{items:documents,controls:documentControls}=usePage<Material>('all-files','/files?scope=all',Object.fromEntries(Object.entries({q:fileSearch,purpose:filePurpose}).filter(([,v])=>v)));

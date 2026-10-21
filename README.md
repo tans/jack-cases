@@ -126,3 +126,5 @@ MEDICAL_DEMO_API_KEY='<本地账号自己的 Key>' npm run demo:medical -- '<已
 - 案例列表和详情仅向普通用户返回明确关联并批准的图片。发布时私有封面未获批准，会回退到已批准的第一张图片；不会泄露原私有封面 ID。
 - `PUT /api/cases/:id/images` 管理员提交 `{mediaIds,coverMediaId}` 保存有序审核图集；图片须来自原需求、当前案例或当前管理员的上传。保存代表审核确认，只有案例发布期间可作为公开图片授权来源。案例下架后其他用户不能继续通过图片 URL 访问。
 - 本地参考导入会上传附件中的封面 PNG 与需求卡 PNG 到私有图片存储，不把这些图片提交到 Git；保持 MED-REQ-0004 的 shareConsent=false。
+
+业务画像与评估字段、Agent 接口和四标签幂等关联操作见 [业务字段说明](docs/BUSINESS-FIELDS.md)。

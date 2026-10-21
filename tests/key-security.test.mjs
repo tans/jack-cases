@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync,readFileSync,existsSync} from 'node:fs';
+import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
@@ -20,7 +20,7 @@ async function harness(t){
   let output='';child=spawn(process.execPath,['--import','tsx','apps/api/src/server.ts'],{env:{...process.env,HOST:'127.0.0.1',PORT:String(port),DATABASE_URL:database,STORAGE_DIR:path.join(dir,'uploads'),SESSION_SECRET:'isolated-test-session-secret-at-least-32-chars',API_KEY_ENCRYPTION_KEY:master,TRUSTED_PROXY_IPS:'',...overrides},stdio:['ignore','pipe','pipe']});
   child.stderr.on('data',c=>{output+=c;});
   await new Promise((resolve,reject)=>{child.stdout.once('data',resolve);child.once('error',reject);child.once('exit',()=>reject(Error(output)));});
-  sql=new Database(overrides.DATABASE_URL??database);return sql;
+  sql=new Database(overrides.DATABASE_URL??database);sql.prepare('INSERT OR IGNORE INTO categories(id,name,slug) VALUES(?,?,?)').run('fixture-category','业务分类','fixture-category');return sql;
  }
  const request=async(route,{token,cookie,headers={},method='GET',body}={})=>{
   const response=await fetch(`http://127.0.0.1:${port}/api${route}`,{method,headers:{...(token?{Authorization:`Bearer ${token}`} : {}),...(cookie?{Cookie:cookie}:{}),...(body&&!(body instanceof FormData)?{'Content-Type':'application/json'}:{}),...headers},body:body?(body instanceof FormData?body:JSON.stringify(body)):undefined});
@@ -30,15 +30,15 @@ async function harness(t){
  t.after(async()=>{await stop();rmSync(dir,{recursive:true,force:true});});
  await start();return {dir,database,master,start,stop,request,get sql(){return sql;}};
 }
-test('scoped encrypted keys, ownership, expiry, revocation and session-only management', {timeout:60000},async t=>{
+test('scoped keys, ownership, expiry, revocation and session-only management', {timeout:60000},async t=>{
  const h=await harness(t),call=h.request;
  const signup=await call('/auth/register',{method:'POST',body:{email:'owner@example.test',password:'test-password'}});
  assert.equal(signup.status,201);const cookie=signup.cookie,original=signup.body.apiKey,userId=signup.body.user.id;
- const row=h.sql.prepare('SELECT * FROM api_keys').get();assert.equal(row.secret_value,null);assert.ok(row.secret_encrypted.startsWith('v1.'));assert.ok(!row.secret_encrypted.includes(original));assert.deepEqual(JSON.parse(row.scopes),defaultScopes);assert.ok(row.expires_at>Date.now()/1000);
+ const row=h.sql.prepare('SELECT * FROM api_keys').get();assert.ok(row.secret_value===original);assert.equal(row.secret_encrypted,null);assert.deepEqual(JSON.parse(row.scopes),defaultScopes);assert.ok(row.expires_at>Date.now()/1000);
  const listed=await call('/keys',{cookie});assert.equal(listed.body[0].secretValue,original);assert.equal(listed.cache,'no-store');assert.equal(listed.body[0].secretEncrypted,undefined);
  for(const [route,method,body] of [['/keys','GET'],['/keys/rotate','POST',{}],['/keys/taxonomy','POST',{}],['/keys/'+row.id,'DELETE']])assert.equal((await call(route,{token:original,cookie,method,body})).status,403);
  assert.equal((await call('/requirements',{token:original})).status,200);
- assert.equal((await call('/requirements',{token:original,method:'POST',body:{title:'Scoped requirement',content:'Private owner requirement'}})).status,201);
+ assert.equal((await call('/requirements',{token:original,method:'POST',body:{categoryId:'fixture-category',title:'Scoped requirement',content:'Private owner requirement'}})).status,201);
  for(const route of ['/users','/requirements?scope=all','/cases?scope=all','/audit-logs','/stats','/admin/skill'])assert.equal((await call(route,{token:original})).status,403);
  assert.equal((await call('/cases',{token:original})).status,200);
  assert.equal((await call('/categories',{token:original,method:'POST',body:{name:'Denied',slug:'denied'}})).status,403);
@@ -72,28 +72,25 @@ test('scoped encrypted keys, ownership, expiry, revocation and session-only mana
  const freshRow=h.sql.prepare('SELECT id FROM api_keys WHERE hash=?').get(digest(fresh.body.apiKey));
  assert.equal((await call('/keys/'+freshRow.id,{cookie,method:'DELETE'})).status,200);assert.equal((await call('/me',{token:fresh.body.apiKey})).status,401);
 });
-test('legacy plaintext migration, hash-only compatibility, missing/wrong master and restored backup', {timeout:60000},async t=>{
+// Main commit 1618338 deliberately moved key display/storage back to secret_value.
+// Exercise its current contract without restoring the retired master-key dependency.
+test('legacy plaintext and hash-only keys survive restart/backup and remain session-managed', {timeout:60000},async t=>{
  const h=await harness(t),call=h.request;
  const signup=await call('/auth/register',{method:'POST',body:{email:'legacy@example.test',password:'test-password'}}),cookie=signup.cookie;
  const legacy='legacy-'+randomBytes(32).toString('hex'),hashOnly='hash-only-'+randomBytes(32).toString('hex');
  h.sql.prepare('INSERT INTO api_keys(id,user_id,name,prefix,hash,secret_value,created_at) VALUES(?,?,?,?,?,?,?)').run('legacy',signup.body.user.id,'Legacy','legacy',digest(legacy),legacy,1);
  h.sql.prepare('INSERT INTO api_keys(id,user_id,name,prefix,hash,created_at) VALUES(?,?,?,?,?,?)').run('hash-only',signup.body.user.id,'Hash only','old',digest(hashOnly),1);
- await h.stop();await h.start({API_KEY_ENCRYPTION_KEY:''});
- for(const token of [legacy,hashOnly,signup.body.apiKey])assert.equal((await call('/me',{token})).status,200);
- const hidden=await call('/keys',{cookie});assert.ok(hidden.body.every(k=>k.secretValue===null));assert.equal(hidden.body.find(k=>k.id==='legacy').legacy,true);
- assert.equal((await call('/keys',{token:legacy})).status,403);
- assert.equal((await call('/keys/rotate',{cookie,method:'POST',body:{}})).status,503);assert.equal((await call('/me',{token:legacy})).status,200,'failed rotation never revokes old keys');
- assert.equal(h.sql.prepare("SELECT secret_value FROM api_keys WHERE id='legacy'").get().secret_value,legacy,'missing config leaves data untouched for migration');
- await h.stop();await h.start();
- const migrated=h.sql.prepare("SELECT * FROM api_keys WHERE id='legacy'").get();assert.equal(migrated.secret_value,null);assert.ok(migrated.secret_encrypted);assert.equal(migrated.scopes,null);assert.equal(migrated.expires_at,null);
- const readable=(await call('/keys',{cookie})).body;assert.equal(readable.find(k=>k.id==='legacy').secretValue,legacy);assert.equal(readable.find(k=>k.id==='hash-only').secretValue,null);
- for(const token of [legacy,hashOnly])assert.equal((await call('/requirements',{token})).status,200);
- h.sql.pragma('wal_checkpoint(TRUNCATE)');
- for(const file of [h.database,h.database+'-wal'])if(existsSync(file))assert.ok(!readFileSync(file).includes(Buffer.from(legacy)),'live migrated DB and WAL do not retain plaintext');
+ const verify=async()=>{
+  for(const token of [legacy,hashOnly,signup.body.apiKey])assert.equal((await call('/me',{token})).status,200);
+  const listed=(await call('/keys',{cookie})).body;
+  assert.ok(listed.find(k=>k.id==='legacy').secretValue===legacy);assert.equal(listed.find(k=>k.id==='legacy').legacy,true);assert.equal(listed.find(k=>k.id==='hash-only').secretValue,null);
+  assert.equal((await call('/keys',{token:legacy})).status,403);
+ };
+ await h.stop();await h.start({API_KEY_ENCRYPTION_KEY:''});await verify();
+ assert.ok(h.sql.prepare("SELECT secret_value FROM api_keys WHERE id='legacy'").get().secret_value===legacy);
  const backup=path.join(h.dir,'backup.db');await h.sql.backup(backup);
- await h.stop();await assert.rejects(h.start({API_KEY_ENCRYPTION_KEY:randomBytes(32).toString('hex')}),/decryption failed/);
- await h.stop();await h.start();assert.equal((await call('/keys',{cookie})).body.find(k=>k.id==='legacy').secretValue,legacy);
- await h.stop();await h.start({DATABASE_URL:backup});assert.equal((await call('/keys',{cookie})).body.find(k=>k.id==='legacy').secretValue,legacy,'backup restored with stable master');
+ await h.stop();await h.start({API_KEY_ENCRYPTION_KEY:randomBytes(32).toString('hex')});await verify();
+ await h.stop();await h.start({DATABASE_URL:backup});await verify();
  const rotation=await call('/keys/rotate',{cookie,method:'POST',body:{}});assert.equal(rotation.status,201);
  for(const token of [legacy,hashOnly])assert.equal((await call('/me',{token})).status,401);
 });
@@ -133,7 +130,7 @@ test('medical files and Markdown downloads obey scoped ownership and public appr
  assert.equal((await call('/files?scope=all',{token:admin.apiKey})).status,403);
  for(const token of [admin.apiKey,other.apiKey])assert.equal((await call(`/files/${fileId}/download`,{token})).status,403);
  assert.equal((await call(`/files/${fileId}/download`,{token:owner.apiKey})).body,'# Private attachment');
- const created=await call('/requirements',{token:owner.apiKey,method:'POST',body:{title:'Scoped medical materials',content:'# Private requirement',shareConsent:true,fileIds:[fileId],contentVersion:'v2.0'}});assert.equal(created.status,201);
+ const created=await call('/requirements',{token:owner.apiKey,method:'POST',body:{categoryId:'fixture-category',title:'Scoped medical materials',content:'# Private requirement',shareConsent:true,fileIds:[fileId],contentVersion:'v2.0'}});assert.equal(created.status,201);
  const reqId=created.body.id;assert.match(created.body.requirementCode,/^MED-REQ-/);assert.equal(created.body.contentVersion,'v2.0');
  // A scoped Agent can explicitly resubmit only its own returned requirement, with write scope.
  h.sql.prepare("UPDATE requirements SET status='rejected' WHERE id=?").run(reqId);

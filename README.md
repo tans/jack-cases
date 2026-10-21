@@ -31,11 +31,11 @@ node -e "const Database=require('better-sqlite3');const db=new Database('./stora
 替换邮箱为自己的邮箱，并重新登录。此操作必须在有数据库访问权限的服务器执行。
 
 ## API
-`POST /api/auth/register` `{email,password}` 创建账号和 HttpOnly cookie，并生成默认 30 天的普通 Agent `apiKey`。
+`POST /api/auth/register` `{email,password}` 创建账号和 HttpOnly cookie，并生成永久有效的账号 `apiKey`。
 
-只有浏览器会话可调用 `GET /api/keys`、`POST /api/keys/rotate`、`POST /api/keys/taxonomy` 和 `DELETE /api/keys/:id`；Bearer（包括旧 Key）不能管理密钥。`rotate` 接受 `{scopes,expiresInDays}`（1–90 天，默认 30），会立即撤销本账号全部旧 Key，事务创建新 Key。登录后可在「Agent 技能」页再次复制有效 Key。管理员可在管理技能页独立生成仅具备分类标签权限的 Key，不继承用户管理权限。
+API Key 不设过期时间和独立权限范围，所有操作按所属账号的当前角色、状态及资源归属校验。角色变化立即生效，账号禁用或 key 撤销后失效。每次 key 认证成功记录 `lastUsedAt`，可在「Agent 技能」及「管理 Agent 技能」页查看最近使用时间。
 
-新 Key 默认允许读取/写入本人需求、读取公开案例、读取分类标签、上传及读取有权访问的附件；只读模式去掉写入。服务端每次检查 scope、期限、撤销、账号状态和资源归属。旧 Key 业务访问兼容保留，界面标注“旧版待轮换”，**未自动获得 scope/期限保护**。
+`GET /api/keys` 读取本人密钥；`POST /api/keys/rotate` 无需参数，撤销本账号所有旧 key 后签发新 key；`DELETE /api/keys/:id` 按现有账号管理规则撤销密钥。Bearer 和浏览器会话遵循相同账号权限。原 `/api/keys/admin`、`/api/keys/taxonomy` 仅保留为管理员兼容签发入口，生成相同的永久账号 key。现有未撤销 key 自动适用新规则，无需重新生成。
 
 `POST /api/requirements` 通过 cookie 或 `Authorization: Bearer wk_...` 认证。Body：
 ```json
@@ -54,7 +54,7 @@ node -e "const Database=require('better-sqlite3');const db=new Database('./stora
 审核必须检查共享许可；**正文、提示词、文件和图片不会自动脱敏**，所有公开内容必须人工确认。
 
 ## 三分钟验收演示
-1. 注册学员，保存自动创建的 30 天普通 Agent API Key；上传一张图片，提交勾选共享的需求。
+1. 注册学员，保存自动创建的永久账号 API Key；上传一张图片，提交勾选共享的需求。
 2. 重新登录后“我的需求”仍可查看。使用 Bearer Key 通过 API 提交第二条需求。
 3. 使用终端提升可信任管理员账号；管理员进入需求管理，审核脱敏文字，选择安全图片并发布。
 4. 普通学员在需求案例库打开已发布案例，复制需求与搭建提示词。

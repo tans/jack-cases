@@ -2,36 +2,27 @@
 
 ## API Key 存储与部署
 
-API Key 明文保存在 `api_keys.secret_value`，鉴权仍通过 SHA-256 hash 查询。创建和轮换不需要额外环境变量；登录会话可读取本人有效密钥并复制给 Agent。`SESSION_SECRET` 仍用于签署登录 Cookie，与 API Key 存储无关。
+API Key 明文保存在 `api_keys.secret_value`，鉴权仍通过 SHA-256 hash 查询。创建和轮换不需要额外环境变量；已认证账号可读取本人有效密钥并复制给 Agent。`SESSION_SECRET` 仍用于签署登录 Cookie，与 API Key 存储无关。
 
 数据库文件、SQLite WAL 文件、快照和备份都包含可直接使用的 API Key。必须限制服务器文件权限、备份访问和下载权限；不要把数据库或备份放到公开目录，也不要在日志、聊天或工单中粘贴 Key。用户离开或怀疑泄露时，立即撤销或轮换密钥。此设计简化了密钥恢复，同时意味着数据库读取权限等同于读取其中的 API Key。
 
-迁移保持现有数据库结构兼容，不删除历史 `secret_encrypted` 列。旧版只保存 hash 的 Key 无法还原明文，但在原有权限规则下仍可鉴权，登录后轮换即可取得新明文。旧版遗留加密 Key 在缺少旧主密钥时也无法恢复明文；轮换后即可重新使用。新 Key 保存到 `secret_value`，以后登录可随时查看。
-
-升级后不能直接回退到本次权限检查之前的旧二进制：旧代码会忽略新 Key 的 scope 和到期列。需要回滚时使用保留本次认证边界的修复版本，或在维护窗口先撤销所有 scoped Key，再恢复匹配版本，避免把受限 Key 解释成全账号权限。
+迁移保持现有数据库结构兼容，不删除历史 `secret_encrypted` 列。旧版只保存 hash 的 Key 无法还原明文，但仍可按所属账号的当前角色鉴权，登录后轮换即可取得新明文。旧版遗留加密 Key 在缺少旧主密钥时也无法恢复明文；轮换后即可重新使用。新 Key 保存到 `secret_value`，以后登录可随时查看。
 
 ## 数据库恢复
 
 数据库备份现在直接包含 API Key 明文。恢复数据库后检查数据库文件和备份权限，再启动服务；不需要单独恢复 API Key 加密主密钥。若只有 hash 的历史 Key 无法重新显示，用户登录后轮换即可。
 
-## 新 Key 授权语义
+## API Key 与账号权限
 
-新 Key `scopes` 是显式非空数组，`expiresAt` 为 UTC 秒，1–90 天（默认 30 天）。路由 deny by default，scope 之外返回 403；过期、撤销或未知 Key 返回 401。账号禁用也失去访问权。即使账号是管理员，新普通 Agent Key 的需求仅限本人，案例仅限已发布，附件继续按所有权/公开审核状态校验。
+API Key 永久有效，不设置独立权限范围。每次请求通过 hash 查询未撤销的 key，再读取所属账号的当前角色和状态，按现有业务角色及资源归属规则判定访问权。管理员 key 可审核和发布，普通账号 key 仍仅能访问该账号有权访问的资源；角色调整即时生效。未知/已撤销 key 或被禁用账号返回 401，账号无权执行的操作返回 403。
 
-| scope | 用途 |
-|---|---|
-| requirements:read | 列表/读取本人需求 |
-| requirements:write | 提交/修改本人需求，仍受原状态规则限制 |
-| cases:read | 读取公开案例及记录复制事件 |
-| taxonomy:read | 读取分类和启用的标签 |
-| taxonomy:write | 维护分类标签、读取全部标签；同时要求账号是 admin/super_admin |
-| media:read | 读取本人或已获访问权的附件内容 |
-| media:write | 上传附件 |
-| content:manage | 查看全量需求和附件、审核需求并发布、维护案例与发布状态；同时要求 admin/super_admin/reviewer 角色 |
+认证成功后更新 `lastUsedAt`（UTC 秒）；尚未使用时为 null。`GET /api/keys` 返回本人 key 的 id、name、prefix、createdAt、revokedAt、lastUsedAt，以及未撤销 key 可读取的 secretValue，不返回 scopes、expiresAt 或历史类型状态。该接口设置 Cache-Control: no-store。普通与管理技能页使用相同账号 key，并展示最近使用时间。
 
-普通配置包含除 `taxonomy:write/content:manage` 外的上述权限；只读配置去掉 `requirements:write/media:write`。`POST /api/keys/rotate` 可选择更小权限集合，必须浏览器登录；会撤销全部现有 Key，包括分类标签和管理 Key。`POST /api/keys/taxonomy` 固定只有 `taxonomy:read/write`，要求管理员 cookie，会替换既有同类管理 Key，不影响普通 Key。`POST /api/keys/admin` 要求 admin/super_admin 的浏览器会话，签发普通权限加 `taxonomy:write/content:manage` 的完整管理 Key，可审核需求和维护发布案例；只替换已有同名管理 Key，不撤销普通或分类标签 Key。两个专用入口都可选择 1–90 天期限或 `permanent:true`；新管理页使用 `/keys/admin`。历史分类标签 Key 的范围不变，需在管理页生成完整管理 Key。所有 scoped Key 都不能管理用户、读审计/统计、管理密钥。不会提供 `users:*` scope。Key 不替代角色和资源归属校验；每次请求检查当前账号角色，撤去管理角色立即失去管理能力。需求发布保留 shareConsent、待审核状态、关联附件审核和审计约束。
+注册时自动签发永久 key。`POST /api/keys/rotate` 不需要权限或有效期参数，会在事务中撤销本账号所有旧 key 并创建一把新 key。`DELETE /api/keys/:id` 保留原有账号角色和归属规则。Bearer key 与浏览器会话都使用这些账号规则，不再因 key 类型或认证方式分配不同权限。旧版 `POST /api/keys/admin` 和 `/api/keys/taxonomy` 保留为管理员兼容签发入口，生成相同的永久账号 key；不会额外撤销已有 key。旧请求中的 scopes、expiresInDays、permanent 不再影响结果。
 
-已对接上游医疗平台的 `/api/files`：本人文件列表和下载使用 `media:read`，上传使用 `media:write`；全量列表 `scope=all` 与案例附件审核仅允许具备 `content:manage` 的管理 Key 或管理会话。需求 Markdown/AI 下载使用 `requirements:read`，案例 AI 下载使用 `cases:read`，所有下载继续执行归属/发布审批检查。新增任何路由默认拒绝 scoped Key，需显式评估权限映射。详情见 `apps/api/src/key-security.ts`。
+迁移 `0005_account_api_keys` 清空所有旧 key 的 scopes/expires_at，并统一内置 key 名称；保留原 key 值、hash、创建/使用时间和撤销状态。已到期但未撤销的 key 从此永久有效，已撤销的 key 不会恢复。数据库中的历史 scope/到期列保留以兼容既有结构，应用不读取也不再写入限制值。
+
+账号 key 可以读取账号有权访问的需求、案例和附件，资源归属与附件公开审批规则仍由业务处理器校验。需求发布继续要求提交人 shareConsent=true、需求处于待审核状态，并记录审计日志。公开授权属于业务数据，由提交人决定。
 
 ## 登录注册与反向代理
 

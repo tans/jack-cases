@@ -6,7 +6,6 @@ import os from 'node:os';import fs from 'node:fs';import path from 'node:path';
 import bcrypt from 'bcryptjs';import sharp from 'sharp';import { eq,and,desc,isNull,inArray,sql,count } from 'drizzle-orm';import { z } from 'zod';
 import {db} from './db.js';import {users,sessions,apiKeys,requirements,cases,casePrompts,media,requirementMedia,caseMedia,categories,reviews,auditLogs,caseEvents,caseComments,tags,requirementTags,caseTags,files,requirementFiles,caseFiles} from './schema.js';
 import {registerLists} from './lists.js';
-import {scopes,agentScopes,taxonomyScopes,adminScopes,requiredScope} from './key-security.js';
 import {proxyBoundary,authRateLimit} from './auth-rate-limit.js';
 import { registerUserRoutes } from './routes/users.js';
 const app=new Koa();app.proxy=true;app.use(proxyBoundary);const r=new Router({prefix:'/api'});
@@ -19,48 +18,37 @@ app.use(async(ctx,next)=>{try{await next();if(ctx.status===404)ctx.body={error:'
 app.use(async(ctx,next)=>{const limit=ctx.path==='/api/media'?(Number(process.env.MAX_IMAGE_MB)||10)*1024*1024:20*1024*1024;const temp=fs.mkdtempSync(path.join(os.tmpdir(),'medical-upload-'));try{await koaBody({multipart:true,formidable:{uploadDir:temp,maxFileSize:limit,maxTotalFileSize:limit,maxFiles:1},jsonLimit:'1mb'})(ctx,async()=>{const uploads=Object.values((ctx.request as any).files??{}).flat() as {size:number}[];if(uploads.length>1||uploads.reduce((n,f)=>n+f.size,0)>limit)bad('Upload limit exceeded',413);await next();});}finally{fs.rmSync(temp,{recursive:true,force:true});}});
 const now=()=>Math.floor(Date.now()/1000),id=()=>randomUUID(),hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 function bad(message:string,status=400):never{throw Object.assign(new Error(message),{status});}
-type Actor={id:string;role:string;email:string;scopes?:string[]};
-// Content management requires both the current account role and an explicit key grant.
-const manager=(a:Actor)=>(!a.scopes||a.scopes.includes('content:manage'))&&['admin','super_admin','reviewer'].includes(a.role);
+type Actor={id:string;role:string;email:string};
+const manager=(a:Actor)=>['admin','super_admin','reviewer'].includes(a.role);
 async function actor(ctx:Koa.Context):Promise<Actor>{
-  let userId='',grants:string[]|undefined;
+  let userId='',keyId:string|undefined;
   const authorization=ctx.get('authorization');
   if(authorization){
     if(!authorization.startsWith('Bearer '))bad('Unauthorized',401);
     const key=db.select().from(apiKeys).where(and(eq(apiKeys.hash,hash(authorization.slice(7))),isNull(apiKeys.revokedAt))).get();
-    if(!key||key.expiresAt!==null&&key.expiresAt<=now())bad('Unauthorized',401);
-    userId=key.userId;
-    if(key.scopes!==null){
-      try{grants=JSON.parse(key.scopes);if(!Array.isArray(grants)||!grants.every(scope=>typeof scope==='string'))bad('Unauthorized',401);}catch{bad('Unauthorized',401);}
-      const required=requiredScope(ctx.method,ctx.path,ctx.query);
-      if(required===null||required&&!grants!.includes(required))bad('API Key scope does not allow this action',403);
-    }
-    db.update(apiKeys).set({lastUsedAt:now()}).where(eq(apiKeys.id,key.id)).run();
+    if(!key)bad('Unauthorized',401);
+    userId=key.userId;keyId=key.id;
   }else{
     const session=ctx.cookies.get('jack_session',{signed:true});
     if(session){const entry=db.select().from(sessions).where(eq(sessions.idHash,hash(session))).get();if(entry&&entry.expiresAt>now())userId=entry.userId;}
   }
   const u=userId?db.select().from(users).where(eq(users.id,userId)).get():null;
   if(!u||u.status!=='active')bad('Unauthorized',401);
-  // Taxonomy is an explicit role AND scope grant, never a user-management grant.
-  if(grants?.includes('taxonomy:write')&&!['admin','super_admin'].includes(u.role))bad('Forbidden',403);
-  if(grants?.includes('content:manage')&&!['admin','super_admin','reviewer'].includes(u.role))bad('Forbidden',403);
-  return {id:u.id,role:u.role,email:u.email,...(grants?{scopes:grants}:{})};
+  if(keyId)db.update(apiKeys).set({lastUsedAt:now()}).where(eq(apiKeys.id,keyId)).run();
+  return {id:u.id,role:u.role,email:u.email};
 }
-async function sessionActor(ctx:Koa.Context){
-  if(ctx.get('authorization'))bad('密钥管理需要浏览器登录会话，不能使用 Bearer Key',403);
+async function keyActor(ctx:Koa.Context){
   ctx.set('Cache-Control','no-store');return actor(ctx);
 }
 const admin=(a:Actor)=>{if(!manager(a))bad('Forbidden',403);};
 const taxonomyEditor=(a:Actor)=>{if(!['admin','super_admin'].includes(a.role))bad('Forbidden',403);};
 const audit=(a:Actor,action:string,kind:string,item:string)=>db.insert(auditLogs).values({id:id(),actorId:a.id,action,resourceType:kind,resourceId:item,createdAt:now()}).run();
 const registerSchema=z.object({email:z.string().trim().email().max(254),password:z.string().min(6).refine(value=>Buffer.byteLength(value,'utf8')<=72,'Password must be at most 72 UTF-8 bytes')});
-const keyInput=z.object({scopes:z.array(z.enum(scopes)).min(1).max(scopes.length).default(agentScopes as typeof scopes[number][]),expiresInDays:z.number().int().min(1).max(90).default(30)});
-function keyRecord(userId:string,name:string,grants:string[],days:number){
+function keyRecord(userId:string){
   const secret='wk_'+randomBytes(32).toString('base64url'),keyId=id();
-  return {secret,record:{id:keyId,userId,name,prefix:secret.slice(0,12),hash:hash(secret),secretValue:secret,scopes:JSON.stringify([...new Set(grants)]),expiresAt:now()+days*86400,createdAt:now()}};
+  return {secret,record:{id:keyId,userId,name:'API key',prefix:secret.slice(0,12),hash:hash(secret),secretValue:secret,createdAt:now()}};
 }
-const issueKey=(userId:string)=>{const {secret,record}=keyRecord(userId,'Agent skill',agentScopes,30);db.insert(apiKeys).values(record).run();return secret;};
+const issueKey=(userId:string)=>{const {secret,record}=keyRecord(userId);db.insert(apiKeys).values(record).run();return secret;};
 const sessionCookie=(ctx:Koa.Context,userId:string)=>{const secret=randomBytes(32).toString('base64url');db.insert(sessions).values({idHash:hash(secret),userId,expiresAt:now()+604800}).run();ctx.cookies.set('jack_session',secret,{httpOnly:true,sameSite:'lax',signed:true,secure:process.env.NODE_ENV==='production',maxAge:604800000});};
 const safeUser=(u:any)=>({id:u.id,email:u.email,role:u.role,status:u.status,createdAt:u.createdAt});
 registerLists(r,actor,admin);
@@ -87,46 +75,34 @@ r.post('/auth/login',async ctx=>{
 r.post('/auth/logout',async ctx=>{const s=ctx.cookies.get('jack_session',{signed:true});if(s)db.delete(sessions).where(eq(sessions.idHash,hash(s))).run();ctx.cookies.set('jack_session','',{maxAge:0});ctx.body={ok:true};});
 r.get('/me',async ctx=>{ctx.body=await actor(ctx);});
 r.get('/keys',async ctx=>{
-  const a=await sessionActor(ctx);
-  ctx.body=db.select().from(apiKeys).where(eq(apiKeys.userId,a.id)).all().map(k=>({
+  const a=await keyActor(ctx);
+  ctx.body=db.select().from(apiKeys).where(eq(apiKeys.userId,a.id)).orderBy(desc(apiKeys.createdAt),desc(apiKeys.id)).all().map(k=>({
     id:k.id,name:k.name,prefix:k.prefix,createdAt:k.createdAt,revokedAt:k.revokedAt,lastUsedAt:k.lastUsedAt,
-    scopes:k.scopes===null?null:JSON.parse(k.scopes),expiresAt:k.expiresAt,legacy:k.scopes===null,
-    secretValue:!k.revokedAt&&(!k.expiresAt||k.expiresAt>now())?k.secretValue:null
+    secretValue:k.revokedAt===null?k.secretValue:null
   }));
 });
 r.post('/keys/rotate',async ctx=>{
-  const a=await sessionActor(ctx),d=keyInput.parse(ctx.request.body);
-  if(d.scopes.includes('taxonomy:write'))taxonomyEditor(a);
-  if(d.scopes.includes('content:manage'))admin(a);
-  const {secret,record}=keyRecord(a.id,'Agent skill',d.scopes,d.expiresInDays);
+  const a=await keyActor(ctx),{secret,record}=keyRecord(a.id);
   db.transaction(tx=>{
     tx.update(apiKeys).set({revokedAt:now(),secretValue:null,secretEncrypted:null}).where(and(eq(apiKeys.userId,a.id),isNull(apiKeys.revokedAt))).run();
     tx.insert(apiKeys).values(record).run();
-  });ctx.status=201;ctx.body={apiKey:secret,scopes:d.scopes,expiresAt:record.expiresAt};
+    tx.insert(auditLogs).values({id:id(),actorId:a.id,action:'rotate',resourceType:'api_key',resourceId:record.id,createdAt:now()}).run();
+  });ctx.status=201;ctx.body={apiKey:secret};
 });
-// Dedicated management keys preserve ordinary Agent keys and require an admin browser session.
-for(const {route,name,grants} of [
-  {route:'/keys/taxonomy',name:'Taxonomy skill',grants:taxonomyScopes},
-  {route:'/keys/admin',name:'Admin skill',grants:adminScopes}
-])r.post(route,async ctx=>{
-  const a=await sessionActor(ctx);taxonomyEditor(a);
-  const d=z.object({expiresInDays:z.number().int().min(1).max(90).default(30),permanent:z.boolean().default(false)}).parse(ctx.request.body);
-  const {secret,record:generated}=keyRecord(a.id,name,grants,d.expiresInDays);
-  const record={...generated,expiresAt:d.permanent?null:generated.expiresAt};
-  db.transaction(tx=>{
-    const previous=tx.select().from(apiKeys).where(and(eq(apiKeys.userId,a.id),eq(apiKeys.name,name),isNull(apiKeys.revokedAt))).all();
-    for(const k of previous)tx.update(apiKeys).set({revokedAt:now(),secretValue:null,secretEncrypted:null}).where(eq(apiKeys.id,k.id)).run();
-    tx.insert(apiKeys).values(record).run();
-  });audit(a,'issue','api_key',record.id);ctx.status=201;ctx.body={apiKey:secret,scopes:grants,expiresAt:record.expiresAt};
+// Older clients can keep their URLs; every issued key now represents the account.
+for(const route of ['/keys/taxonomy','/keys/admin'])r.post(route,async ctx=>{
+  const a=await keyActor(ctx);taxonomyEditor(a);
+  const {secret,record}=keyRecord(a.id);db.insert(apiKeys).values(record).run();
+  audit(a,'issue','api_key',record.id);ctx.status=201;ctx.body={apiKey:secret};
 });
 r.delete('/keys/:id',async ctx=>{
-  const a=await sessionActor(ctx),k=db.select().from(apiKeys).where(eq(apiKeys.id,ctx.params.id)).get();
+  const a=await keyActor(ctx),k=db.select().from(apiKeys).where(eq(apiKeys.id,ctx.params.id)).get();
   if(!k||(k.userId!==a.id&&!manager(a)))bad('Not found',404);
   db.update(apiKeys).set({revokedAt:now(),secretValue:null,secretEncrypted:null}).where(eq(apiKeys.id,k.id)).run();ctx.body={ok:true};
 });
-r.get('/admin/skill',async ctx=>{const a=await actor(ctx);taxonomyEditor(a);ctx.body={version:2,title:'医疗大健康需求平台管理技能',content:`# 医疗大健康需求平台管理技能
+r.get('/admin/skill',async ctx=>{const a=await actor(ctx);taxonomyEditor(a);ctx.body={version:3,title:'医疗大健康需求平台管理技能',content:`# 医疗大健康需求平台管理技能
 
-使用医疗大健康需求平台 API 审核需求、发布和维护案例、管理分类与标签。
+使用医疗大健康需求平台 API 审核需求、发布和维护案例、管理分类与标签。API Key 永久有效，所有操作权限跟随所属账号的当前角色。
 
 - API 地址：${origin}/api
 - 认证：每个请求使用 Authorization: Bearer <管理员自己的 API Key>；不要把密钥分享给他人或写入代码仓库。
@@ -140,8 +116,9 @@ r.get('/admin/skill',async ctx=>{const a=await actor(ctx);taxonomyEditor(a);ctx.
 - 附件：GET /files?scope=all；GET /media；沿用详情中的下载地址读取附件，上传使用 POST /files 或 POST /media（multipart）。
 - 案例附件审核：PUT /cases/{id}/files，字段 files（数组元素 id、approved）；PUT /cases/{id}/images，字段 mediaIds、coverMediaId，限已关联或本人上传的图片。
 - 删除被使用的分类会返回 409；仍被需求或案例引用的标签会停用以保留历史记录。
-- 遇到 401/403 时停止操作并报告账号或密钥权限错误；遇到 409 时报告当前状态、公开授权或引用冲突，不绕过约束。
-- 管理 key 不具备用户管理、密钥管理、统计或审计日志读取权限。写操作由服务端校验当前账号角色及 key 权限并记录审计日志；不要批量覆盖未知字段。`};});
+- 遇到 401/403 时停止操作并报告账号权限或密钥状态错误；遇到 409 时报告当前状态、公开授权或引用冲突，不绕过约束。
+- key 只用于识别账号，不单独设置权限或过期时间。服务端每次校验账号当前角色、状态和资源归属，并记录 key 最近使用时间；账号角色变更立即生效，撤销 key 或禁用账号后失效。
+- 用户管理、统计、审计日志及其他操作按账号角色校验；仅执行用户已授权的任务。写操作记录审计日志，不要批量覆盖未知字段。`};});
 const categoryInput=z.object({name:z.string().trim().min(1).max(80),slug:z.string().regex(/^[a-z0-9-]{1,80}$/),parentId:z.string().nullable().optional(),sortOrder:z.number().int().default(0)});
 function categorySlugAvailable(slug:string,excludeId?:string){const found=db.select().from(categories).where(eq(categories.slug,slug)).get();if(found&&found.id!==excludeId)bad('Category slug already exists',409);}
 function categoryNameAvailable(name:string,excludeId?:string){const found=db.select().from(categories).where(eq(categories.name,name)).get();if(found&&found.id!==excludeId)bad('Category name already exists',409);}

@@ -215,6 +215,7 @@ r.patch('/requirements/:id',async ctx=>{
  if(!manager(a)&&!['submitted','rejected'].includes(v.status))bad('已发布或当前状态的需求不可修改',409);
  const d=reqSchema.omit({requirementCode:true}).partial().parse(ctx.request.body);validateBusiness(d,v);
  if(d.categoryId&&!db.select().from(categories).where(eq(categories.id,d.categoryId)).get())bad('Invalid category');
+ if(d.industry&&d.industry!==v.industry&&!d.industry.split(/[、,，/]/).every(item=>['药品','医疗器械','医药服务','IVD'].includes(item.trim())))bad('Invalid industry');
  if(d.shareConsent!==undefined&&v.userId!==a.id)bad('Only author may change sharing consent',403);
  if(d.fileIds)validateFileLinks(d.fileIds,a,v.id);
  if(d.tagIds)validateTags(d.tagIds,tagsFor('requirement',v.id).map(t=>t.id));if(d.mediaIds)validateMediaLinks(d.mediaIds,a,v.id);

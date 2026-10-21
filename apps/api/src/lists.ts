@@ -3,14 +3,14 @@ import type Router from '@koa/router';
 import { and,asc,count,desc,eq,inArray,or,sql,type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db,sqlite } from './db.js';
-import { users,requirements,cases,media,categories,tags,requirementTags,caseTags,caseMedia,requirementMedia,files,requirementFiles,reviews,auditLogs } from './schema.js';
+import { users,requirements,cases,media,categories,tags,businessOptions,requirementTags,caseTags,caseMedia,requirementMedia,files,requirementFiles,reviews,auditLogs } from './schema.js';
 import { pagination,paginationShape,pageResponse } from './pagination.js';
 
 type Actor={id:string;role:string;email:string};
 const text=z.string().trim().max(200);
 const filters={q:text.optional(),categoryId:text.optional(),industry:text.optional(),difficulty:z.enum(['easy','medium','hard']).optional(),implementationStatus:z.enum(['pending','building','completed','verified']).optional(),tagIds:z.string().max(2400).transform(v=>v.split(',')).refine(v=>v.length<=12&&v.every(Boolean)&&new Set(v).size===v.length,'Expected 1–12 distinct tag IDs').optional()};
 const caseQuery=z.object({...paginationShape,...filters,scope:z.enum(['published','all']).default('published'),status:z.enum(['published','draft','archived']).optional()}).strict();
-const businessFilters=Object.fromEntries(businessFields.map(field=>[field,z.string().max(4000).transform(v=>v.split(',')).refine(v=>v.length<=40&&v.every(Boolean),'Invalid business filter').optional()])) as Record<typeof businessFields[number],z.ZodOptional<z.ZodEffects<z.ZodEffects<z.ZodString,string[],string>,string[],string>>>;
+const businessFilters=Object.fromEntries(businessFields.map(field=>[field,z.string().max(4000).transform(v=>v.split(',')).refine(v=>v.length<=40&&v.every(Boolean)&&new Set(v).size===v.length,'Invalid business filter').optional()])) as Record<typeof businessFields[number],z.ZodOptional<z.ZodEffects<z.ZodEffects<z.ZodString,string[],string>,string[],string>>>;
 const reqQuery=z.object({...paginationShape,...filters,...businessFilters,urgency:z.enum(['pending','low','medium','high']).optional(),scope:z.enum(['mine','all']).default('mine'),category:text.optional(),status:z.enum(['submitted','published','rejected','draft']).optional(),consent:z.enum(['authorized','private']).optional()}).strict();
 const fileQuery=z.object({...paginationShape,scope:z.enum(['mine','all']).default('mine'),q:text.optional(),purpose:z.enum(['reference','agent','data','other']).optional()}).strict();
 const simpleQuery=z.object(paginationShape).strict();
@@ -71,7 +71,7 @@ export function registerLists(r:Router,actor:(ctx:any)=>Promise<Actor>,admin:(a:
     const a=await actor(ctx),d=reqQuery.parse(ctx.query);if(d.scope==='all')admin(a);
     const access=d.scope==='all'?undefined:eq(requirements.userId,a.id),conditions=commonWhere(requirements,d);
     if(d.category)conditions.push(eq(categoryName,d.category));if(d.consent)conditions.push(eq(requirements.shareConsent,d.consent==='authorized'));
-    for(const field of businessFields)if(d[field])conditions.push(sql`exists (select 1 from json_each(${requirements[field]}) where value in (${sql.join(d[field]!.map(v=>sql`${v}`),sql`, `)}))`);
+    for(const field of businessFields)if(d[field]){for(const id of d[field]!){const option=db.select().from(businessOptions).where(eq(businessOptions.id,id)).get();if(!option||option.field!==field)throw Object.assign(new Error('Invalid '+field+' filter: '+id),{status:400});}conditions.push(sql`exists (select 1 from json_each(${requirements[field]}) where value in (${sql.join(d[field]!.map(v=>sql`${v}`),sql`, `)}))`);}
     if(d.urgency)conditions.push(eq(requirements.urgency,d.urgency));
     const where=and(access,...conditions),p=pagination(d);
     ctx.body=db.transaction(tx=>{

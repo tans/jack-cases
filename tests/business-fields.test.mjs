@@ -36,7 +36,8 @@ test('business profile: shared API, lifecycle, permissions, PATCH and compatibil
   assert.equal((await call('/requirements/'+id,key,{industry:'医疗器械、IVD'},'PATCH')).status,200);
  });
  await t.test('invalid IDs, wrong fields, duplicates and circulation exclusivity return explicit 400',async()=>{
-  for(const p of [{subdomains:['unknown']},{subdomains:['mode-direct']},{businessModes:['mode-direct','mode-direct']},{circulationTypes:['circulation-na','circulation-dealer']},{circulationTypes:['circulation-pending','circulation-delivery']},{circulationTypes:['circulation-na','circulation-pending']},{urgency:'critical'}]){const r=await call('/requirements/'+id,key,p,'PATCH');assert.equal(r.status,400,JSON.stringify(p));assert.ok(r.data.error);}
+  for(const p of [{subdomains:['unknown']},{subdomains:['mode-direct']},{businessModes:['mode-direct','mode-direct']},{circulationTypes:['circulation-na','circulation-dealer']},{circulationTypes:['circulation-pending','circulation-delivery']},{circulationTypes:['circulation-na','circulation-pending']},{urgency:'critical'},{industry:'骨科'}]){const r=await call('/requirements/'+id,key,p,'PATCH');assert.equal(r.status,400,JSON.stringify(p));assert.ok(r.data.error);}
+  assert.equal((await call('/requirements?page=1&subdomains=unknown',key)).status,400);
   for(const circulationTypes of [['circulation-pending'],['circulation-na'],[]])assert.equal((await call('/requirements/'+id,key,{circulationTypes},'PATCH')).status,200);
  });
  await t.test('PATCH omission preserves data and attachments; explicit clear takes effect independently',async()=>{

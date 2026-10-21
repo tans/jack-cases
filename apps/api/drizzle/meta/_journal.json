@@ -29,6 +29,13 @@
       "when": 1792513877425,
       "tag": "0003_agent_key_security",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792542857658,
+      "tag": "0004_messy_fabian_cortez",
+      "breakpoints": true
     }
   ]
 }

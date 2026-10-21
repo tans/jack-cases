@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "daisyui";
 @config "../tailwind.config.js";
 
 /* Preserve the existing v3 palette, scale and form defaults during the security upgrade. */

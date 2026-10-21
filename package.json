@@ -21,6 +21,7 @@
   },
   "devDependencies": {
     "concurrently": "^9.2.0",
+    "daisyui": "^5.7.50",
     "drizzle-kit": "^0.31.11",
     "typescript": "^5.8.0"
   },

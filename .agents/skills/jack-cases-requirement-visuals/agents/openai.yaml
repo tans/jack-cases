@@ -1,4 +1,4 @@
 interface:
   display_name: "医疗需求概念配图"
-  short_description: "为医疗大健康需求生成桌面、网站或手机原型概念图与分类主题插画"
+  short_description: "用中文为医疗大健康需求生成简洁概念图，突出一个界面重点并点缀分类元素"
   default_prompt: "使用 $jack-cases-requirement-visuals 为这个无图需求生成并按需关联配图。"

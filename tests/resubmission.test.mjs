@@ -32,7 +32,7 @@ test('returned requirement: reasons, draft save, explicit resubmit, review and a
   const addedFile=await upload('author','补充验收标准.md','# PUBLIC-APPROVED-MATERIAL');
   const adminFile=await upload('admin','管理员参考资料.md','# ADMIN-PRIVATE-MATERIAL');
   const foreignFile=await upload('other','他人文档.md','# FOREIGN-MATERIAL');
-  const original={fileIds:[initialFile.id],title:'库存需求',content:'# 背景\n库存预警需要补充验收标准。',shareConsent:true,categoryId:'cat',industry:'医疗',department:'采购',difficulty:'medium',implementationStatus:'building',expectedOutcome:'减少缺货',tagIds:['tag1'],mediaIds:['photo1']};
+  const original={fileIds:[initialFile.id],title:'库存需求',content:'# 背景\n库存预警需要补充验收标准。',shareConsent:true,categoryId:'cat',industry:'医疗器械',department:'采购',difficulty:'medium',implementationStatus:'building',expectedOutcome:'减少缺货',tagIds:['tag1'],mediaIds:['photo1']};
   const {id}=await call('author','POST','/requirements',original,201);const url='/requirements/'+id;
   const initial=await call('author','GET',url);assert.match(initial.requirementCode,/^MED-REQ-/);assert.equal(initial.contentVersion,'v1.0');assert.equal(initial.files[0].id,initialFile.id);
   await call('author','POST',url+'/resubmit',{},409);

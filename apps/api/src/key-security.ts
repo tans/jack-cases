@@ -6,7 +6,7 @@ export const agentScopes=['requirements:read','requirements:write','cases:read',
 export const taxonomyScopes=['taxonomy:read','taxonomy:write'];
 export function requiredScope(method:string,path:string,query:Record<string,unknown>):string|null{
   if(path==='/api/me')return '';
-  if(/^\/api\/(categories|tags)(\/|$)/.test(path))return method==='GET'&&query.scope!=='all'?'taxonomy:read':'taxonomy:write';
+  if(/^\/api\/(categories|tags|business-options)(\/|$)/.test(path))return method==='GET'&&query.scope!=='all'?'taxonomy:read':'taxonomy:write';
   if(/^\/api\/requirements(\/|$)/.test(path)){
     if(query.scope==='all'||/\/review$/.test(path))return null;
     return method==='GET'?'requirements:read':['POST','PATCH'].includes(method)?'requirements:write':null;

@@ -1,3 +1,4 @@
+import {DatabaseSync} from 'node:sqlite';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -91,7 +92,8 @@ test('built API restarts with persisted SQLite and decodable resized/private ima
     return response.json();
   };
   const resized = await upload('/media'), original = await upload('/files');
-  const reqResponse = await request('/requirements', apiKey, { title: '原生依赖回归', content: '# 医疗业务\n\n重启后必须保留。', fileIds: [original.id] });
+  const fixtureDb = new DatabaseSync(env.DATABASE_URL);fixtureDb.prepare('INSERT INTO categories(id,name,slug) VALUES(?,?,?)').run('fixture-category','业务分类','fixture-category');fixtureDb.close();
+  const reqResponse = await request('/requirements', apiKey, { categoryId: 'fixture-category', title: '原生依赖回归', content: '# 医疗业务\n\n重启后必须保留。', fileIds: [original.id] });
   assert.equal(reqResponse.status, 201); const req = await reqResponse.json();
   await stop(); await start();
   const detail = await request('/requirements/' + req.id, apiKey);

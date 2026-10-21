@@ -2,6 +2,8 @@
 
 基线：origin/main b0c2b5d；独立 checkout 17-business-fields-taxonomy。关联 Issue #45。
 
+按用户最新要求，本次使用隔离测试数据完成标签关联验收。真实线上记录仅只读核对及备份，不执行标签写入；不再等待线上词表管理密钥。
+
 ## 验证结果
 
 - npm ci、npm run typecheck、npm run build、npm test 通过；92 项测试无失败或跳过。构建存在原有大块体积提示。
@@ -10,9 +12,9 @@
 - cua_repl 真实浏览器测试：1280px 桌面及 390px 窄屏。表单回填、流通互斥、独立业务模式、手动评估保存、画像全空提交、详情、行业+骨科组合筛选和无匹配结果、管理编辑保存、标签查询/重命名/停用、词表新增/重命名/停用通过。390px 表单、标签管理、管理编辑 scrollWidth=clientWidth=390。
 - 管理端修改评估并关联标签后，独立回读 SQLite 确认 MED-REQ-0001 / v1.0 不变、医疗器械与骨科分别保存、难度 null、shareConsent=0。
 
-## 指定四标签数据操作：真实目标已定位，缺独立词表写权限
+## 真实环境只读核对（本次不执行写入）
 
-已通过用户提供的普通需求密钥连接 `https://jack-cases.minapp.xin/api`，在该账号可见的 73 条需求中按编号 + 精确标题找到五条真实记录。账号角色为 admin，但密钥仅有 taxonomy:read；GET /tags?scope=all 明确返回 403，未提升现有密钥权限。四个目标标签不在活跃词表中，尚需独立 taxonomy:write 管理密钥进一步查询停用项并按需创建。
+已通过用户提供的普通需求密钥连接 `https://jack-cases.minapp.xin/api`，在该账号可见的 73 条需求中按编号 + 精确标题找到五条真实记录。账号角色为 admin，但密钥仅有 taxonomy:read；GET /tags?scope=all 明确返回 403，未提升现有密钥权限。四个目标标签不在活跃词表中，真实写入需要独立 taxonomy:write 管理密钥；按最新要求，此操作不属于本次执行范围。
 
 五条均为 v1.0、shareConsent=false，各有 2 张图片和 1 份独立 Agent 文档。已保存权限 0600 的完整 before.json，并成功读取 10 张图片、5 份文档，保存 SHA-256 基线；真实快照位于 git 忽略的 storage/production-tag-operation/，不提交凭证、正文或附件内容。
 
@@ -20,7 +22,9 @@
 
 **真实四条标签创建/关联尚未执行，线上写入次数为 0。下面隔离夹具结果不代表线上完成。**
 
-为验证操作脚本，在独立 localhost:3047 的隔离 QA 数据库建立五条同编号/标题夹具，先只读预检、再连续执行两次 --apply：
+## 隔离测试数据验收：通过
+
+在独立 localhost:3047 的隔离 QA 数据库建立五条同编号/标题夹具，先只读预检、再连续执行两次 --apply。按用户最新要求再次直接回读持久化 SQLite，确认以下关联和旧标签保留，四个目标标签各一条、没有重复创建；五条仍为 v1.0、shareConsent=false。机器可读结果见 [测试回读](test-tag-readback.json)。
 
 | 夹具编号 | 回读新增标签 | 保留原标签 |
 | --- | --- | --- |

@@ -1,0 +1,134 @@
+{
+  "environment": "isolated QA SQLite storage/business-qa.db; not production",
+  "verifiedAt": "2026-10-21T12:14:28.801077+00:00",
+  "verified": true,
+  "idempotentApplyCount": 2,
+  "productionWrites": 0,
+  "results": [
+    {
+      "id": "3996bb34-430e-4827-85d5-a104b5357781",
+      "requirement_code": "MED-REQ-0498",
+      "title": "骨科耗材术前备货信息核对与参考清单",
+      "content_version": "v1.0",
+      "share_consent": 0,
+      "tags": [
+        {
+          "id": "8ebe2097-c80d-444c-82e8-e31ae8ee53d6",
+          "name": "任务跟进",
+          "active": 1
+        },
+        {
+          "id": "fdd2bcf8-3b60-44f7-aed4-634c27cda472",
+          "name": "术前备货",
+          "active": 1
+        },
+        {
+          "id": "a6c2040a-7930-47c0-ba7b-bb178978e361",
+          "name": "跨部门协同",
+          "active": 1
+        }
+      ],
+      "expectedNewTag": "术前备货",
+      "verified": true
+    },
+    {
+      "id": "8dfd920f-f9d7-4562-a940-d01a3a6f7c48",
+      "requirement_code": "MED-REQ-0507",
+      "title": "骨科耗材销售拜访对话练习与复盘",
+      "content_version": "v1.0",
+      "share_consent": 0,
+      "tags": [
+        {
+          "id": "8ebe2097-c80d-444c-82e8-e31ae8ee53d6",
+          "name": "任务跟进",
+          "active": 1
+        },
+        {
+          "id": "a6c2040a-7930-47c0-ba7b-bb178978e361",
+          "name": "跨部门协同",
+          "active": 1
+        },
+        {
+          "id": "4b7e502f-1bd0-4895-a835-ca5ef0031e02",
+          "name": "销售训练",
+          "active": 1
+        }
+      ],
+      "expectedNewTag": "销售训练",
+      "verified": true
+    },
+    {
+      "id": "5744fddc-3c76-42f5-ab8b-a85c152cc1a3",
+      "requirement_code": "MED-REQ-0508",
+      "title": "骨科销售访前公开学术资料收集与核验",
+      "content_version": "v1.0",
+      "share_consent": 0,
+      "tags": [
+        {
+          "id": "8ebe2097-c80d-444c-82e8-e31ae8ee53d6",
+          "name": "任务跟进",
+          "active": 1
+        },
+        {
+          "id": "a81bb359-2de4-4244-abf7-0f933150a7e8",
+          "name": "客户研究",
+          "active": 1
+        },
+        {
+          "id": "a6c2040a-7930-47c0-ba7b-bb178978e361",
+          "name": "跨部门协同",
+          "active": 1
+        }
+      ],
+      "expectedNewTag": "客户研究",
+      "verified": true
+    },
+    {
+      "id": "92784f25-bbec-4364-8820-887d13d86741",
+      "requirement_code": "MED-REQ-0510",
+      "title": "医疗器械企业批量文件用印与操作追溯",
+      "content_version": "v1.0",
+      "share_consent": 0,
+      "tags": [
+        {
+          "id": "8ebe2097-c80d-444c-82e8-e31ae8ee53d6",
+          "name": "任务跟进",
+          "active": 1
+        },
+        {
+          "id": "62aef2c2-5033-4a01-847b-0aa340197e3d",
+          "name": "用印管理",
+          "active": 1
+        },
+        {
+          "id": "a6c2040a-7930-47c0-ba7b-bb178978e361",
+          "name": "跨部门协同",
+          "active": 1
+        }
+      ],
+      "expectedNewTag": "用印管理",
+      "verified": true
+    },
+    {
+      "id": "743d1edc-014a-4175-960d-0b78ad549329",
+      "requirement_code": "MED-REQ-0509",
+      "title": "骨科耗材区域销售动作与医院项目进展跟踪",
+      "content_version": "v1.0",
+      "share_consent": 0,
+      "tags": [
+        {
+          "id": "8ebe2097-c80d-444c-82e8-e31ae8ee53d6",
+          "name": "任务跟进",
+          "active": 1
+        },
+        {
+          "id": "a6c2040a-7930-47c0-ba7b-bb178978e361",
+          "name": "跨部门协同",
+          "active": 1
+        }
+      ],
+      "expectedNewTag": null,
+      "verified": true
+    }
+  ]
+}

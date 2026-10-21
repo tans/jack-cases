@@ -1,7 +1,7 @@
 const statusMessages:Record<number,string>={400:'填写内容有误，请检查后重试。',401:'登录已失效，请重新登录。',403:'你没有执行此操作的权限。',404:'内容不存在或已被移除。',409:'内容状态已变化，请刷新后重试。',413:'文件过大，请缩小文件后重新上传。',429:'操作过于频繁，请稍后重试。'};
 const businessMessages:Record<string,string>={
  'Invalid credentials':'邮箱或密码不正确，请检查后重试。','Email already registered':'该邮箱已注册，请直接登录。',
- 'Sharing consent required':'尚未获得共享授权，不能发布。','Requirement already published':'该需求已发布，请刷新查看最新状态。',
+'Requirement already published':'该需求已发布，请刷新查看最新状态。',
  'Category slug already exists':'分类标识已存在，请更换。','Category name already exists':'分类名称已存在，请更换。',
  'File unavailable':'文件暂时不可用，请稍后重试。','Invalid file reference':'资料关联已失效，请重新选择。'
 };

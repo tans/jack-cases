@@ -14,10 +14,9 @@ for(let page=1;;page++){const result=await request('/requirements?page='+page+'&
 const imagePaths=[['MED-REQ-0004_cover.png','01.png'],['MED-REQ-0004_card.png','11.png']].map(names=>names.map(n=>path.join(source,n)).find(p=>fs.existsSync(p))).filter(Boolean);
 const importImages=async()=>{const ids=[];for(const location of imagePaths){const form=new FormData();form.append('file',new Blob([fs.readFileSync(location)]),path.basename(location));ids.push((await request('/media',form)).id);}return ids;};
 if(existing){
-  if(existing.shareConsent)throw new Error('Reference must remain private; refusing to modify a shared record');
   if(existing.images.length||!imagePaths.length){console.log('Already imported; no changes: '+existing.requirementCode);process.exit(0);}
   const mediaIds=await importImages();await request('/requirements/'+existing.id,{mediaIds,coverMediaId:mediaIds[0]??null},'PATCH');
-  console.log('Added private cover and detail images: '+existing.requirementCode);process.exit(0);
+  console.log('Added cover and detail images: '+existing.requirementCode);process.exit(0);
 }
 const fields=record.platformWritableFields;
 const content=fields.content.replace(/^(适用场景|业务痛点|核心需求|预期效果|需求边界)：/gm,'## $1\n\n');
@@ -26,6 +25,6 @@ const form=new FormData();form.append('purpose','agent');form.append('file',new 
 const file=await request('/files',form);
 // Do not copy old platform UUIDs, category/tag/media IDs or unsupported evaluation claims.
 const mediaIds=await importImages();
-const created=await request('/requirements',{title:fields.title,content,requirementCode:code,contentVersion:record.version,industry:fields.industry,department:fields.department,expectedOutcome:fields.expectedOutcome,implementationStatus:'pending',shareConsent:false,fileIds:[file.id],mediaIds,coverMediaId:mediaIds[0]??null});
+const created=await request('/requirements',{title:fields.title,content,requirementCode:code,contentVersion:record.version,industry:fields.industry,department:fields.department,expectedOutcome:fields.expectedOutcome,implementationStatus:'pending',fileIds:[file.id],mediaIds,coverMediaId:mediaIds[0]??null});
 const folder=path.resolve('storage/demo-materials');fs.mkdirSync(folder,{recursive:true});fs.writeFileSync(path.join(folder,code+'.md'),content,'utf8');fs.writeFileSync(path.join(folder,code+'-Agent.md'),agent,'utf8');
-console.log(`Imported private reference ${code}; local record ${created.id}; Markdown copies: storage/demo-materials/`);
+console.log(`Imported reference ${code}; local record ${created.id}; Markdown copies: storage/demo-materials/`);

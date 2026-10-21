@@ -11,6 +11,8 @@ github 的 gh 命令已经登录授权， 优先使用
 
 优先使用本地记忆系统
 
+管理员为无配图需求生成或关联配图时，使用 `$jack-cases-requirement-visuals`；这是管理 Agent 工作流，不属于平台功能。
+
              Codex
                │
         ┌──────┴──────┐

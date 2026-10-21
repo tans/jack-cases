@@ -9,7 +9,7 @@ type Actor={id:string;role:string;email:string};
 const text=z.string().trim().max(200);
 const filters={q:text.optional(),categoryId:text.optional(),industry:text.optional(),difficulty:z.enum(['easy','medium','hard']).optional(),implementationStatus:z.enum(['pending','building','completed','verified']).optional(),tagIds:z.string().max(2400).transform(v=>v.split(',')).refine(v=>v.length<=12&&v.every(Boolean)&&new Set(v).size===v.length,'Expected 1–12 distinct tag IDs').optional()};
 const caseQuery=z.object({...paginationShape,...filters,scope:z.enum(['published','all']).default('published'),status:z.enum(['published','draft','archived']).optional()}).strict();
-const reqQuery=z.object({...paginationShape,...filters,scope:z.enum(['mine','all']).default('mine'),category:text.optional(),status:z.enum(['submitted','published','rejected','draft']).optional(),consent:z.enum(['authorized','private']).optional()}).strict();
+const reqQuery=z.object({...paginationShape,...filters,scope:z.enum(['mine','all']).default('mine'),category:text.optional(),status:z.enum(['submitted','published','rejected','draft']).optional(),consent:z.enum(['authorized','private']).optional(),images:z.enum(['missing','present']).optional()}).strict();
 const fileQuery=z.object({...paginationShape,scope:z.enum(['mine','all']).default('mine'),q:text.optional(),purpose:z.enum(['reference','agent','data','other']).optional()}).strict();
 const simpleQuery=z.object(paginationShape).strict();
 // Deterministic scalar helpers preserve the existing legacy category and multi-industry UI semantics.
@@ -69,6 +69,7 @@ export function registerLists(r:Router,actor:(ctx:any)=>Promise<Actor>,admin:(a:
     const a=await actor(ctx),d=reqQuery.parse(ctx.query);if(d.scope==='all')admin(a);
     const access=d.scope==='all'?undefined:eq(requirements.userId,a.id),conditions=commonWhere(requirements,d);
     if(d.category)conditions.push(eq(categoryName,d.category));if(d.consent)conditions.push(eq(requirements.shareConsent,d.consent==='authorized'));
+    if(d.images)conditions.push(d.images==='missing'?sql`not exists(select 1 from ${requirementMedia} where ${requirementMedia.requirementId}=${requirements.id})`:sql`exists(select 1 from ${requirementMedia} where ${requirementMedia.requirementId}=${requirements.id})`);
     const where=and(access,...conditions),p=pagination(d);
     ctx.body=db.transaction(tx=>{
       const total=tx.select({total:count()}).from(requirements).where(where).get()!.total;
@@ -81,7 +82,7 @@ export function registerLists(r:Router,actor:(ctx:any)=>Promise<Actor>,admin:(a:
   r.get('/requirements/facets',async ctx=>{
     const a=await actor(ctx),d=z.object({scope:z.enum(['mine','all']).default('mine')}).strict().parse(ctx.query);if(d.scope==='all')admin(a);
     const access=d.scope==='all'?undefined:eq(requirements.userId,a.id);
-    ctx.body={industries:industryOptions(requirements,access),categories:db.select({name:categoryName,total:count()}).from(requirements).where(access).groupBy(categoryName).all(),...db.select({total:count(),missingCategory:sql<number>`coalesce(sum(case when ${requirements.categoryId} is null then 1 else 0 end),0)`,withoutTags:sql<number>`coalesce(sum(case when not exists(select 1 from ${requirementTags} where ${requirementTags.requirementId}=${requirements.id}) then 1 else 0 end),0)`,notAuthorized:sql<number>`coalesce(sum(case when ${requirements.shareConsent}=0 then 1 else 0 end),0)`}).from(requirements).where(access).get()};
+    ctx.body={industries:industryOptions(requirements,access),categories:db.select({name:categoryName,total:count()}).from(requirements).where(access).groupBy(categoryName).all(),...db.select({total:count(),missingCategory:sql<number>`coalesce(sum(case when ${requirements.categoryId} is null then 1 else 0 end),0)`,withoutTags:sql<number>`coalesce(sum(case when not exists(select 1 from ${requirementTags} where ${requirementTags.requirementId}=${requirements.id}) then 1 else 0 end),0)`,withoutImages:sql<number>`coalesce(sum(case when not exists(select 1 from ${requirementMedia} where ${requirementMedia.requirementId}=${requirements.id}) then 1 else 0 end),0)`,notAuthorized:sql<number>`coalesce(sum(case when ${requirements.shareConsent}=0 then 1 else 0 end),0)`}).from(requirements).where(access).get()};
   });
   r.get('/cases',async ctx=>{
     const a=await actor(ctx),d=caseQuery.parse(ctx.query);if(d.scope==='all')admin(a);

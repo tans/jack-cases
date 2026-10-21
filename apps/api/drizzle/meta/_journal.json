@@ -57,6 +57,13 @@
       "when": 1792596000000,
       "tag": "0007_requirement_publish_choice",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1792596000001,
+      "tag": "0008_remove_publish_requested",
+      "breakpoints": true
     }
   ]
 }

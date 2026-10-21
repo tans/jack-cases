@@ -26,6 +26,7 @@ export function migrateDatabase(sqlite: Database.Database, folder = migrationsFo
   const reviewedDrops = new Set([
     'ALTER TABLE `requirements` DROP COLUMN `share_consent`;',
     'ALTER TABLE `media` DROP COLUMN `status`;',
+    'ALTER TABLE `requirements` DROP COLUMN `publish_requested`;',
   ]);
   for (const migration of migrations) for (const statement of migration.sql) {
     if (/\bDROP\s+TABLE|\bDELETE\s+FROM|\bRENAME\s+TO|\bTRUNCATE\b/i.test(statement) || (/\bDROP\s+COLUMN/i.test(statement) && !reviewedDrops.has(statement.trim()))) {

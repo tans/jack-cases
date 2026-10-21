@@ -16,7 +16,7 @@
 
 ## 需求筛选与权限
 
-`scope=mine|all`，默认 mine；all 必须通过管理权限校验，count、分页、筛选和 facets 共用该权限范围。支持 `q`（标题、内容、预期效果、行业、部门和分类）、`categoryId`（含子分类）、`category`（列表中显示的分类名，兼容正文中的“业务分类：…”）、`industry`、`difficulty`、`implementationStatus`、`tagIds`、`status=submitted|published|rejected|draft`。需求是否同意公开是提交人字段，不作为“私有/公开案例”筛选项。
+`scope=mine|all`，默认 mine；all 必须通过管理权限校验，count、分页、筛选和 facets 共用该权限范围。支持 `q`（标题、内容、预期效果、行业、部门和分类）、`categoryId`（含子分类）、`category`（列表中显示的分类名，兼容正文中的“业务分类：…”）、`industry`、`difficulty`、`implementationStatus`、`tagIds`、`status=submitted|published|rejected|draft`。需求审核状态由待审核、已发布等状态表达，不提供私有属性筛选。
 
 `GET /api/requirements/facets?scope=mine|all` 返回权限范围内全量行业/分类选项及 SQL 聚合概况，供需求管理页保留原有分类快捷筛选与概况交互。正文历史分类和多行业通过确定性 SQLite 标量函数匹配，记录仍由 SQL 筛选/聚合，不把全表读入应用层。
 

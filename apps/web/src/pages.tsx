@@ -104,15 +104,15 @@ function MyRequirements(){
 }
 type RequirementDraft={title:string;content:string;categoryId:string;industry:string;department:string;difficulty:string;implementationStatus:string;expectedOutcome:string};
 function RequirementQueue({categories,onOpen}:{categories:Category[];onOpen:(item:Requirement)=>void}){
- const[filter,setFilter]=useState(''),[categoryFilter,setCategoryFilter]=useState(''),[industryFilter,setIndustryFilter]=useState(''),[statusFilter,setStatusFilter]=useState(''),[consentFilter,setConsentFilter]=useState(''),[missingImagesOnly,setMissingImagesOnly]=useState(false);
- const lookupQuery=useData<{industries:string[];categories:{name:string;total:number}[];total:number;missingCategory:number;withoutTags:number;withoutImages:number;notAuthorized:number}>('requirements','/requirements/facets?scope=all');const{data:facets}=lookupQuery;
+ const[filter,setFilter]=useState(''),[categoryFilter,setCategoryFilter]=useState(''),[industryFilter,setIndustryFilter]=useState(''),[statusFilter,setStatusFilter]=useState(''),[consentFilter,setConsentFilter]=useState('');
+ const lookupQuery=useData<{industries:string[];categories:{name:string;total:number}[];total:number;missingCategory:number;withoutTags:number;notAuthorized:number}>('requirements','/requirements/facets?scope=all');const{data:facets}=lookupQuery;
  const categoryCounts=Object.fromEntries((facets?.categories??[]).map(x=>[x.name,x.total]));
  const categoryOptions=Object.keys(categoryCounts).sort((a,b)=>a.localeCompare(b,'zh-CN'));
  const industries=facets?.industries??[],statuses=Object.keys(reviewStatusLabels);
- const{items:filtered,total,controls,isPending,error:loadError}=usePage<Requirement>('requirements','/requirements?scope=all',Object.fromEntries(Object.entries({q:filter,category:categoryFilter,industry:industryFilter,status:statusFilter,consent:consentFilter,images:missingImagesOnly?'missing':''}).filter(([,v])=>v)));
+ const{items:filtered,total,controls,isPending,error:loadError}=usePage<Requirement>('requirements','/requirements?scope=all',Object.fromEntries(Object.entries({q:filter,category:categoryFilter,industry:industryFilter,status:statusFilter,consent:consentFilter}).filter(([,v])=>v)));
  const missingCategory=facets?.missingCategory??0,withoutTags=facets?.withoutTags??0,notAuthorized=facets?.notAuthorized??0;
- const hasFilters=!!(filter||categoryFilter||industryFilter||statusFilter||consentFilter||missingImagesOnly);
- const clearFilters=()=>{setFilter('');setCategoryFilter('');setIndustryFilter('');setStatusFilter('');setConsentFilter('');setMissingImagesOnly(false);};
+ const hasFilters=!!(filter||categoryFilter||industryFilter||statusFilter||consentFilter);
+ const clearFilters=()=>{setFilter('');setCategoryFilter('');setIndustryFilter('');setStatusFilter('');setConsentFilter('');};
  return <div className="space-y-4">
   <section className="rounded-lg border bg-white px-4 py-3" aria-label="需求数据概况">
    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm"><span className="font-medium text-slate-900">{facets?.total??0} 条需求</span><span className="text-amber-700">{missingCategory} 条待映射分类</span><span className="text-slate-600">{withoutTags} 条无标签</span><span className="text-amber-700">{notAuthorized} 条未授权公开</span></div>
@@ -124,7 +124,6 @@ function RequirementQueue({categories,onOpen}:{categories:Category[];onOpen:(ite
    <select aria-label="行业筛选" className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" value={industryFilter} onChange={event=>setIndustryFilter(event.target.value)}><option value="">全部行业</option>{industries.map(industry=><option key={industry} value={industry}>{industry}</option>)}</select>
    <select aria-label="审核状态筛选" className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" value={statusFilter} onChange={event=>setStatusFilter(event.target.value)}><option value="">全部状态</option>{statuses.map(status=><option key={status} value={status}>{reviewStatusLabels[status]??statusLabel(status)}</option>)}</select>
    <select aria-label="共享授权筛选" className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" value={consentFilter} onChange={event=>setConsentFilter(event.target.value)}><option value="">全部授权状态</option><option value="authorized">允许脱敏共享</option><option value="private">仅私有</option></select>
-   <Button type="button" variant={missingImagesOnly?'default':'outline'} aria-pressed={missingImagesOnly} onClick={()=>setMissingImagesOnly(value=>!value)}>无配图 <span className="ml-1 tabular-nums">{facets?.withoutImages??'—'}</span></Button>
    <Button type="button" variant="outline" disabled={!hasFilters} onClick={clearFilters}>清除筛选</Button>
   </div>
   <div className="flex items-center justify-between gap-3 text-sm text-slate-600"><p>本页 {filtered.length} 条 · 匹配 {total} 条需求</p>{hasFilters&&<button type="button" className="text-orange-700 underline underline-offset-2" onClick={clearFilters}>重置条件</button>}</div>

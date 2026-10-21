@@ -6,7 +6,7 @@ import os from 'node:os';import fs from 'node:fs';import path from 'node:path';
 import bcrypt from 'bcryptjs';import sharp from 'sharp';import { eq,and,desc,isNull,inArray,sql,count } from 'drizzle-orm';import { z } from 'zod';
 import {db} from './db.js';import {users,sessions,apiKeys,requirements,cases,casePrompts,media,requirementMedia,caseMedia,categories,reviews,auditLogs,caseEvents,caseComments,tags,requirementTags,caseTags,files,requirementFiles,caseFiles} from './schema.js';
 import {registerLists} from './lists.js';
-import {scopes,agentScopes,taxonomyScopes,requiredScope} from './key-security.js';
+import {scopes,agentScopes,taxonomyScopes,adminScopes,requiredScope} from './key-security.js';
 import {proxyBoundary,authRateLimit} from './auth-rate-limit.js';
 import { registerUserRoutes } from './routes/users.js';
 const app=new Koa();app.proxy=true;app.use(proxyBoundary);const r=new Router({prefix:'/api'});
@@ -20,8 +20,8 @@ app.use(async(ctx,next)=>{const limit=ctx.path==='/api/media'?(Number(process.en
 const now=()=>Math.floor(Date.now()/1000),id=()=>randomUUID(),hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 function bad(message:string,status=400):never{throw Object.assign(new Error(message),{status});}
 type Actor={id:string;role:string;email:string;scopes?:string[]};
-// Scoped Agents always use owner/public access even when their account is an administrator.
-const manager=(a:Actor)=>!a.scopes&&['admin','super_admin','reviewer'].includes(a.role);
+// Content management requires both the current account role and an explicit key grant.
+const manager=(a:Actor)=>(!a.scopes||a.scopes.includes('content:manage'))&&['admin','super_admin','reviewer'].includes(a.role);
 async function actor(ctx:Koa.Context):Promise<Actor>{
   let userId='',grants:string[]|undefined;
   const authorization=ctx.get('authorization');
@@ -44,6 +44,7 @@ async function actor(ctx:Koa.Context):Promise<Actor>{
   if(!u||u.status!=='active')bad('Unauthorized',401);
   // Taxonomy is an explicit role AND scope grant, never a user-management grant.
   if(grants?.includes('taxonomy:write')&&!['admin','super_admin'].includes(u.role))bad('Forbidden',403);
+  if(grants?.includes('content:manage')&&!['admin','super_admin','reviewer'].includes(u.role))bad('Forbidden',403);
   return {id:u.id,role:u.role,email:u.email,...(grants?{scopes:grants}:{})};
 }
 async function sessionActor(ctx:Koa.Context){
@@ -96,30 +97,51 @@ r.get('/keys',async ctx=>{
 r.post('/keys/rotate',async ctx=>{
   const a=await sessionActor(ctx),d=keyInput.parse(ctx.request.body);
   if(d.scopes.includes('taxonomy:write'))taxonomyEditor(a);
+  if(d.scopes.includes('content:manage'))admin(a);
   const {secret,record}=keyRecord(a.id,'Agent skill',d.scopes,d.expiresInDays);
   db.transaction(tx=>{
     tx.update(apiKeys).set({revokedAt:now(),secretValue:null,secretEncrypted:null}).where(and(eq(apiKeys.userId,a.id),isNull(apiKeys.revokedAt))).run();
     tx.insert(apiKeys).values(record).run();
   });ctx.status=201;ctx.body={apiKey:secret,scopes:d.scopes,expiresAt:record.expiresAt};
 });
-// Dedicated taxonomy key does not replace the ordinary Agent key. Only cookie-authenticated admins can create it.
-r.post('/keys/taxonomy',async ctx=>{
+// Dedicated management keys preserve ordinary Agent keys and require an admin browser session.
+for(const {route,name,grants} of [
+  {route:'/keys/taxonomy',name:'Taxonomy skill',grants:taxonomyScopes},
+  {route:'/keys/admin',name:'Admin skill',grants:adminScopes}
+])r.post(route,async ctx=>{
   const a=await sessionActor(ctx);taxonomyEditor(a);
   const d=z.object({expiresInDays:z.number().int().min(1).max(90).default(30),permanent:z.boolean().default(false)}).parse(ctx.request.body);
-  const {secret,record:generated}=keyRecord(a.id,'Taxonomy skill',taxonomyScopes,d.expiresInDays);
+  const {secret,record:generated}=keyRecord(a.id,name,grants,d.expiresInDays);
   const record={...generated,expiresAt:d.permanent?null:generated.expiresAt};
   db.transaction(tx=>{
-    const previous=tx.select().from(apiKeys).where(and(eq(apiKeys.userId,a.id),eq(apiKeys.name,'Taxonomy skill'),isNull(apiKeys.revokedAt))).all();
+    const previous=tx.select().from(apiKeys).where(and(eq(apiKeys.userId,a.id),eq(apiKeys.name,name),isNull(apiKeys.revokedAt))).all();
     for(const k of previous)tx.update(apiKeys).set({revokedAt:now(),secretValue:null,secretEncrypted:null}).where(eq(apiKeys.id,k.id)).run();
     tx.insert(apiKeys).values(record).run();
-  });ctx.status=201;ctx.body={apiKey:secret,scopes:taxonomyScopes,expiresAt:record.expiresAt};
+  });audit(a,'issue','api_key',record.id);ctx.status=201;ctx.body={apiKey:secret,scopes:grants,expiresAt:record.expiresAt};
 });
 r.delete('/keys/:id',async ctx=>{
   const a=await sessionActor(ctx),k=db.select().from(apiKeys).where(eq(apiKeys.id,ctx.params.id)).get();
   if(!k||(k.userId!==a.id&&!manager(a)))bad('Not found',404);
   db.update(apiKeys).set({revokedAt:now(),secretValue:null,secretEncrypted:null}).where(eq(apiKeys.id,k.id)).run();ctx.body={ok:true};
 });
-r.get('/admin/skill',async ctx=>{const a=await actor(ctx);taxonomyEditor(a);ctx.body={version:1,title:'医疗大健康需求平台管理技能',content:`# 医疗大健康需求平台管理技能\n\n使用医疗大健康需求平台 API 维护分类和标签。\n\n- API 地址：${origin}/api\n- 认证：每个请求使用 Authorization: Bearer <管理员自己的 API Key>；不要把密钥分享给他人或写入代码仓库。\n- 分类：GET /categories；POST /categories；PATCH/DELETE /categories/{id}。字段：name、slug、parentId、sortOrder。\n- 标签：GET /tags?scope=all；POST /tags；PATCH/DELETE /tags/{id}。字段：name、slug、group、color、active、sortOrder。\n- 删除被使用的分类会返回 409；仍被需求或案例引用的标签会停用以保留历史记录。\n- 遇到 401/403 时停止操作并请管理员检查账号角色或密钥；遇到 409 时说明引用冲突，勿尝试绕过。\n- 写操作由服务端校验权限并记录审计日志；不要批量覆盖未知字段。`};});
+r.get('/admin/skill',async ctx=>{const a=await actor(ctx);taxonomyEditor(a);ctx.body={version:2,title:'医疗大健康需求平台管理技能',content:`# 医疗大健康需求平台管理技能
+
+使用医疗大健康需求平台 API 审核需求、发布和维护案例、管理分类与标签。
+
+- API 地址：${origin}/api
+- 认证：每个请求使用 Authorization: Bearer <管理员自己的 API Key>；不要把密钥分享给他人或写入代码仓库。
+- 待审核需求：GET /requirements?scope=all&status=submitted&page=1&pageSize=50；响应包含 items、total、page 和 pageSize，逐页读取；详情 GET /requirements/{id}。
+- 审核并发布：POST /requirements/{id}/review，字段 decision（approve 或 reject）、notes、title、summary、requirementPrompt、buildPrompt、approvedMediaIds、approvedFileIds。approve 会创建已发布案例并返回 caseId；reject 必须提供具体 notes。
+- 发布前先审阅正文，整理可公开的 title、summary 和 Markdown requirementPrompt；检查个人信息、商业秘密和附件。仅明确审核通过的关联图片或文件可列入 approvedMediaIds / approvedFileIds，未批准的附件保持私有。
+- 仅 status=submitted 的需求可审核，且 approve 必须已有 shareConsent=true；未获提交人公开授权时保留待审核并报告原因，不修改其授权状态。
+- 案例：GET /cases?scope=all；GET /cases/{id}；POST /cases；PATCH /cases/{id}；POST /cases/{id}/status，字段 status（published、draft、archived）。关联需求的案例发布仍要求提交人已授权公开。
+- 分类：GET /categories；POST /categories；PATCH/DELETE /categories/{id}。字段：name、slug、parentId、sortOrder。
+- 标签：GET /tags?scope=all；POST /tags；PATCH/DELETE /tags/{id}。字段：name、slug、group、color、active、sortOrder。
+- 附件：GET /files?scope=all；GET /media；沿用详情中的下载地址读取附件，上传使用 POST /files 或 POST /media（multipart）。
+- 案例附件审核：PUT /cases/{id}/files，字段 files（数组元素 id、approved）；PUT /cases/{id}/images，字段 mediaIds、coverMediaId，限已关联或本人上传的图片。
+- 删除被使用的分类会返回 409；仍被需求或案例引用的标签会停用以保留历史记录。
+- 遇到 401/403 时停止操作并报告账号或密钥权限错误；遇到 409 时报告当前状态、公开授权或引用冲突，不绕过约束。
+- 管理 key 不具备用户管理、密钥管理、统计或审计日志读取权限。写操作由服务端校验当前账号角色及 key 权限并记录审计日志；不要批量覆盖未知字段。`};});
 const categoryInput=z.object({name:z.string().trim().min(1).max(80),slug:z.string().regex(/^[a-z0-9-]{1,80}$/),parentId:z.string().nullable().optional(),sortOrder:z.number().int().default(0)});
 function categorySlugAvailable(slug:string,excludeId?:string){const found=db.select().from(categories).where(eq(categories.slug,slug)).get();if(found&&found.id!==excludeId)bad('Category slug already exists',409);}
 function categoryNameAvailable(name:string,excludeId?:string){const found=db.select().from(categories).where(eq(categories.name,name)).get();if(found&&found.id!==excludeId)bad('Category name already exists',409);}

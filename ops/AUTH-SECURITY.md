@@ -27,10 +27,11 @@ API Key 明文保存在 `api_keys.secret_value`，鉴权仍通过 SHA-256 hash �
 | taxonomy:write | 维护分类标签、读取全部标签；同时要求账号是 admin/super_admin |
 | media:read | 读取本人或已获访问权的附件内容 |
 | media:write | 上传附件 |
+| content:manage | 查看全量需求和附件、审核需求并发布、维护案例与发布状态；同时要求 admin/super_admin/reviewer 角色 |
 
-普通配置包含除 `taxonomy:write` 外的上述权限；只读配置去掉 `requirements:write/media:write`。`POST /api/keys/rotate` 可选择更小权限集合，必须浏览器登录；会撤销全部现有 Key，包括分类标签 Key。`POST /api/keys/taxonomy` 固定只有 `taxonomy:read/write`，要求管理员 cookie，会替换既有同类管理 Key，不影响普通 Key。两者都可选择期限。所有 scoped Key 都不能管理用户、审核需求、发布案例、读审计/统计、管理密钥。不会提供 `users:*` scope。Key 不替代角色和资源归属校验；账号撤去管理员角色后 taxonomy 写 Key 也不可用。
+普通配置包含除 `taxonomy:write/content:manage` 外的上述权限；只读配置去掉 `requirements:write/media:write`。`POST /api/keys/rotate` 可选择更小权限集合，必须浏览器登录；会撤销全部现有 Key，包括分类标签和管理 Key。`POST /api/keys/taxonomy` 固定只有 `taxonomy:read/write`，要求管理员 cookie，会替换既有同类管理 Key，不影响普通 Key。`POST /api/keys/admin` 要求 admin/super_admin 的浏览器会话，签发普通权限加 `taxonomy:write/content:manage` 的完整管理 Key，可审核需求和维护发布案例；只替换已有同名管理 Key，不撤销普通或分类标签 Key。两个专用入口都可选择 1–90 天期限或 `permanent:true`；新管理页使用 `/keys/admin`。历史分类标签 Key 的范围不变，需在管理页生成完整管理 Key。所有 scoped Key 都不能管理用户、读审计/统计、管理密钥。不会提供 `users:*` scope。Key 不替代角色和资源归属校验；每次请求检查当前账号角色，撤去管理角色立即失去管理能力。需求发布保留 shareConsent、待审核状态、关联附件审核和审计约束。
 
-已对接上游医疗平台的 `/api/files`：本人文件列表和下载使用 `media:read`，上传使用 `media:write`；`scope=all` 与案例附件审核不允许 scoped Key。需求 Markdown/AI 下载使用 `requirements:read`，案例 AI 下载使用 `cases:read`，所有下载继续执行归属/发布审批检查。新增任何路由默认拒绝 scoped Key，需显式评估权限映射。详情见 `apps/api/src/key-security.ts`。
+已对接上游医疗平台的 `/api/files`：本人文件列表和下载使用 `media:read`，上传使用 `media:write`；全量列表 `scope=all` 与案例附件审核仅允许具备 `content:manage` 的管理 Key 或管理会话。需求 Markdown/AI 下载使用 `requirements:read`，案例 AI 下载使用 `cases:read`，所有下载继续执行归属/发布审批检查。新增任何路由默认拒绝 scoped Key，需显式评估权限映射。详情见 `apps/api/src/key-security.ts`。
 
 ## 登录注册与反向代理
 

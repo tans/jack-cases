@@ -4,9 +4,9 @@ import Koa from 'koa'; import Router from '@koa/router'; import cors from '@koa/
 import { randomBytes,randomUUID,createHash } from 'node:crypto';
 import os from 'node:os';import fs from 'node:fs';import path from 'node:path';
 import bcrypt from 'bcryptjs';import sharp from 'sharp';import { eq,and,desc,isNull,inArray,sql,count } from 'drizzle-orm';import { z } from 'zod';
-import {db} from './db.js';import {users,sessions,apiKeys,requirements,cases,casePrompts,media,requirementMedia,caseMedia,categories,reviews,auditLogs,caseEvents,caseComments,tags,requirementTags,caseTags,files,requirementFiles,caseFiles} from './schema.js';
+import {db,sqlite} from './db.js';import {users,sessions,apiKeys,requirements,cases,casePrompts,media,requirementMedia,caseMedia,categories,reviews,auditLogs,caseEvents,caseComments,tags,requirementTags,caseTags,files,requirementFiles,caseFiles} from './schema.js';
 import {registerLists} from './lists.js';
-import {proxyBoundary,authRateLimit} from './auth-rate-limit.js';
+import {proxyBoundary,authRateLimit,previewRateLimit} from './auth-rate-limit.js';
 import { registerUserRoutes } from './routes/users.js';
 const app=new Koa();app.proxy=true;app.use(proxyBoundary);const r=new Router({prefix:'/api'});
 const deployedCommitFile=process.env.DEPLOYED_COMMIT_FILE;
@@ -200,6 +200,23 @@ function validateCover(coverId:string|null|undefined,ids:string[]){if(coverId&&!
 const reqPhotos=(reqId:string)=>db.select().from(requirementMedia).where(eq(requirementMedia.requirementId,reqId)).orderBy(requirementMedia.sortOrder,requirementMedia.mediaId).all().map(j=>({id:j.mediaId,url:`/api/media/${j.mediaId}/content`}));
 const casePhotos=(caseId:string)=>db.select().from(caseMedia).innerJoin(media,eq(caseMedia.mediaId,media.id)).where(eq(caseMedia.caseId,caseId)).orderBy(caseMedia.sortOrder,caseMedia.mediaId).all().map(j=>({id:j.media.id,url:`/api/media/${j.media.id}/content`}));
 
+// Anonymous teasers: newest 50 published cases that carry at least one image, titles and images only.
+const previewCase=(c:typeof cases.$inferSelect)=>{
+  const images=casePhotos(c.id);
+  return {id:c.id,title:c.title,coverMediaId:images.some(im=>im.id===c.coverMediaId)?c.coverMediaId:images[0]?.id??null,images};
+};
+r.get('/cases/preview',async ctx=>{
+  ctx.set('Cache-Control','public, max-age=60');previewRateLimit(ctx);
+  const rows=db.select().from(cases).where(eq(cases.status,'published')).orderBy(desc(cases.publishedAt),desc(cases.createdAt),desc(cases.id)).limit(200).all();
+  ctx.body=rows.map(previewCase).filter(c=>c.images.length).slice(0,50);
+});
+r.get('/cases/:id/preview',async ctx=>{
+  ctx.set('Cache-Control','public, max-age=60');previewRateLimit(ctx);
+  const c=db.select().from(cases).where(and(eq(cases.id,ctx.params.id),eq(cases.status,'published'))).get();
+  if(!c)bad('Not found',404);
+  ctx.body=previewCase(c);
+});
+
 // Preserve review decisions and submission actions independently of draft saves.
 const reqHistory=(reqId:string)=>({
  reviews:db.select().from(reviews).where(eq(reviews.requirementId,reqId)).orderBy(desc(reviews.createdAt),sql`rowid DESC`).all(),
@@ -246,6 +263,18 @@ r.put('/cases/:id/images',async ctx=>{
   validateCover(d.coverMediaId,d.mediaIds);
   db.transaction(tx=>{tx.delete(caseMedia).where(eq(caseMedia.caseId,c.id)).run();d.mediaIds.forEach((mediaId,sortOrder)=>{tx.insert(caseMedia).values({caseId:c.id,mediaId,sortOrder}).run();});tx.update(cases).set({coverMediaId:d.coverMediaId??d.mediaIds[0]??null}).where(eq(cases.id,c.id)).run();});
   audit(a,'review-images','case',c.id);ctx.body=caseDetail(c.id,a);
+});
+r.get('/cases/:id/related',async ctx=>{
+ const a=await actor(ctx),current=caseDetail(ctx.params.id,a);
+ const rows=sqlite.prepare(`WITH ranked AS (
+   SELECT c.id,c.title,c.summary,c.requirement_code AS requirementCode,c.content_version AS contentVersion,c.cover_media_id AS coverMediaId,c.industry,c.category_id AS categoryId,
+     (SELECT count(*) FROM case_tags own JOIN case_tags other ON other.case_id=? AND other.tag_id=own.tag_id WHERE own.case_id=c.id) AS tag_matches,
+     CASE WHEN c.category_id IS NOT NULL AND c.category_id=? THEN 1 ELSE 0 END AS category_match,
+     CASE WHEN c.industry IS NOT NULL AND c.industry=? THEN 1 ELSE 0 END AS industry_match
+   FROM cases c WHERE c.status='published' AND c.id<>?
+ ) SELECT * FROM ranked WHERE tag_matches>0 OR category_match>0 OR industry_match>0
+ ORDER BY tag_matches DESC,category_match DESC,industry_match DESC,id DESC LIMIT 4`).all(current.id,current.categoryId??null,current.industry??null,current.id) as Array<{id:string;title:string;summary:string;requirementCode:string|null;contentVersion:string;coverMediaId:string|null;industry:string|null;categoryId:string|null}>;
+ ctx.body=rows.map(c=>{const images=casePhotos(c.id);return {id:c.id,title:c.title,summary:c.summary,requirementCode:c.requirementCode,contentVersion:c.contentVersion,industry:c.industry,images,coverMediaId:images.some(im=>im.id===c.coverMediaId)?c.coverMediaId:images[0]?.id??null,tags:tagsFor('case',c.id)};});
 });
 r.get('/cases/:id',async ctx=>{const a=await actor(ctx);ctx.body=caseDetail(ctx.params.id,a);});
 r.get('/cases/:id/comments',async ctx=>{const a=await actor(ctx);const c=caseDetail(ctx.params.id,a);const rows=db.select().from(caseComments).where(eq(caseComments.caseId,c.id)).orderBy(caseComments.createdAt).limit(100).all();ctx.body=rows.filter(x=>x.status!=='hidden'||manager(a)).map(x=>({id:x.id,content:x.content,status:x.status,createdAt:x.createdAt,authorLabel:'用户'}));});

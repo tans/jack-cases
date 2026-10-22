@@ -46,3 +46,16 @@ export function authRateLimit(ctx:Koa.Context){
   for(const [key,limit] of rules){const bucket=buckets.get(key);if(bucket&&bucket.count>=limit){ctx.set('Retry-After',String(Math.max(1,Math.ceil((bucket.reset-time)/1000))));ctx.throw(429,'登录或注册尝试过于频繁，请稍后重试');}}
   for(const [key] of rules){const bucket=buckets.get(key)??{count:0,reset:time+windowMs};bucket.count++;buckets.set(key,bucket);}
 }
+// Anonymous preview endpoints return only titles and images; a short per-IP window caps scraping.
+const previewWindowMs=60*1000;
+const previewIpLimit=ipLimit('PREVIEW_IP_LIMIT',120);
+const previewBuckets=new Map<string,Bucket>();
+export function previewRateLimit(ctx:Koa.Context){
+  const time=Date.now(),key='preview:ip:'+ctx.state.clientIp;
+  const bucket=previewBuckets.get(key);
+  if(bucket&&bucket.reset<=time)previewBuckets.delete(key);
+  if(previewBuckets.size>=5000&&!previewBuckets.has(key)){ctx.set('Retry-After','60');ctx.throw(429,'请求过于频繁，请稍后重试');}
+  if(bucket&&bucket.count>=previewIpLimit){ctx.set('Retry-After',String(Math.max(1,Math.ceil((bucket.reset-time)/1000))));ctx.throw(429,'请求过于频繁，请稍后重试');}
+  const next=bucket??{count:0,reset:time+previewWindowMs};
+  next.count++;previewBuckets.set(key,next);
+}

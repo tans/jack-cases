@@ -64,6 +64,13 @@
       "when": 1792596000001,
       "tag": "0008_remove_publish_requested",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1792977811320,
+      "tag": "0009_visits_and_favorites",
+      "breakpoints": true
     }
   ]
 }

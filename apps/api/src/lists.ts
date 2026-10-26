@@ -1,14 +1,16 @@
 import type Router from '@koa/router';
-import { and,asc,count,desc,eq,inArray,or,sql,type SQL } from 'drizzle-orm';
+import { and,asc,count,desc,eq,inArray,or,sql,getTableColumns,type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db,sqlite } from './db.js';
 import { users,requirements,cases,media,categories,tags,requirementTags,caseTags,caseMedia,requirementMedia,files,requirementFiles,reviews,auditLogs } from './schema.js';
 import { pagination,paginationShape,pageResponse } from './pagination.js';
+import {requirementViewCount,caseViewCount,isFavorited} from './engagement.js';
+import {caseFavorites} from './schema.js';
 
 type Actor={id:string;role:string;email:string};
 const text=z.string().trim().max(200);
 const filters={q:text.optional(),categoryId:text.optional(),industry:text.optional(),difficulty:z.enum(['easy','medium','hard']).optional(),implementationStatus:z.enum(['pending','building','completed','verified']).optional(),tagIds:z.string().max(2400).transform(v=>v.split(',')).refine(v=>v.length<=12&&v.every(Boolean)&&new Set(v).size===v.length,'Expected 1–12 distinct tag IDs').optional()};
-const caseQuery=z.object({...paginationShape,...filters,scope:z.enum(['published','all']).default('published'),status:z.enum(['published','draft','archived']).optional()}).strict();
+const caseQuery=z.object({...paginationShape,...filters,scope:z.enum(['published','all']).default('published'),status:z.enum(['published','draft','archived']).optional(),favorites:z.literal('true').optional()}).strict();
 const reqQuery=z.object({...paginationShape,...filters,scope:z.enum(['mine','all']).default('mine'),category:text.optional(),status:z.enum(['submitted','published','rejected','draft']).optional()}).strict();
 const fileQuery=z.object({...paginationShape,scope:z.enum(['mine','all']).default('mine'),q:text.optional(),purpose:z.enum(['reference','agent','data','other']).optional()}).strict();
 const simpleQuery=z.object(paginationShape).strict();
@@ -71,7 +73,7 @@ export function registerLists(r:Router,actor:(ctx:any)=>Promise<Actor>,admin:(a:
     const where=and(access,...conditions),p=pagination(d);
     ctx.body=db.transaction(tx=>{
       const total=tx.select({total:count()}).from(requirements).where(where).get()!.total;
-      const rows=tx.select().from(requirements).where(where).orderBy(...order(requirements,d.sort)).limit(p.pageSize).offset(p.offset).all();
+      const rows=tx.select({...getTableColumns(requirements),viewCount:requirementViewCount()}).from(requirements).where(where).orderBy(...order(requirements,d.sort)).limit(p.pageSize).offset(p.offset).all();
       const ids=rows.map(x=>x.id),linkedTags=pageTags('requirement',ids),linkedFiles=pageFiles(ids),history=pageHistory(ids),images=new Map<string,{id:string;url:string}[]>();
       if(ids.length)for(const link of tx.select().from(requirementMedia).where(inArray(requirementMedia.requirementId,ids)).orderBy(requirementMedia.sortOrder,requirementMedia.mediaId).all()){const list=images.get(link.requirementId)??[];list.push({id:link.mediaId,url:`/api/media/${link.mediaId}/content`});images.set(link.requirementId,list);}
       return pageResponse(rows.map(x=>({...x,...history.get(x.id),images:images.get(x.id)??[],files:linkedFiles.get(x.id)??[],tags:linkedTags.get(x.id)??[]})),total,p);
@@ -84,9 +86,11 @@ export function registerLists(r:Router,actor:(ctx:any)=>Promise<Actor>,admin:(a:
   });
   r.get('/cases',async ctx=>{
     const a=await actor(ctx),d=caseQuery.parse(ctx.query);if(d.scope==='all')admin(a);
-    const where=and(d.scope==='published'?eq(cases.status,'published'):undefined,...commonWhere(cases,d)),p=pagination(d);
+    const where=and(d.scope==='published'||d.favorites?eq(cases.status,'published'):undefined,d.favorites?isFavorited(a.id):undefined,...commonWhere(cases,d)),p=pagination(d);
     const hasPublicImages=sql`exists (select 1 from ${caseMedia} where ${caseMedia.caseId}=${cases.id})`;
-    ctx.body=db.transaction(tx=>{const total=tx.select({total:count()}).from(cases).where(where).get()!.total;const rows=tx.select().from(cases).where(where).orderBy(desc(hasPublicImages),...order(cases,d.sort)).limit(p.pageSize).offset(p.offset).all();const ids=rows.map(x=>x.id),linked=pageTags('case',ids),linkedImages=pageCaseImages(ids);return pageResponse(rows.map(x=>{const images=linkedImages.get(x.id)??[];return {...x,images,coverMediaId:images.some(im=>im.id===x.coverMediaId)?x.coverMediaId:images[0]?.id??null,tags:linked.get(x.id)??[]};}),total,p);});
+    const savedAt=sql`(${db.select({createdAt:caseFavorites.createdAt}).from(caseFavorites).where(and(eq(caseFavorites.caseId,cases.id),eq(caseFavorites.userId,a.id)))})`;
+    const sorting=d.favorites?[d.sort==='oldest'?asc(savedAt):desc(savedAt),asc(cases.id)]:[desc(hasPublicImages),...order(cases,d.sort)];
+    ctx.body=db.transaction(tx=>{const total=tx.select({total:count()}).from(cases).where(where).get()!.total;const rows=tx.select({...getTableColumns(cases),favorited:isFavorited(a.id),viewCount:caseViewCount()}).from(cases).where(where).orderBy(...sorting).limit(p.pageSize).offset(p.offset).all();const ids=rows.map(x=>x.id),linked=pageTags('case',ids),linkedImages=pageCaseImages(ids);return pageResponse(rows.map(x=>{const images=linkedImages.get(x.id)??[];return {...x,images,coverMediaId:images.some(im=>im.id===x.coverMediaId)?x.coverMediaId:images[0]?.id??null,tags:linked.get(x.id)??[]};}),total,p);});
   });
   r.get('/tags/popular',async ctx=>{
     ctx.body=db.select({id:tags.id,name:tags.name,count:count()}).from(caseTags).innerJoin(tags,eq(caseTags.tagId,tags.id)).innerJoin(cases,eq(caseTags.caseId,cases.id)).where(eq(cases.status,'published')).groupBy(tags.id,tags.name,tags.sortOrder).orderBy(desc(count()),asc(tags.sortOrder),tags.name).limit(12).all();

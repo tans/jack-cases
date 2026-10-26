@@ -47,6 +47,14 @@ API Key 不设过期时间和独立权限范围，所有操作按所属账号的
 
 管理员端（同一套核心资源）：`GET /api/requirements?scope=all`, `GET /api/cases?scope=all`, `GET /api/media`, `GET /api/users`, `GET /api/stats`。
 
+### 访问量与收藏
+
+- 管理后台「数据概览」显示整站累计、今日和近 7 天页面浏览量（PV），日界线使用北京时间。包含官网、用户端与管理端；从功能上线后首次记录开始累计，不追溯历史，也不等同于独立访客数（UV）。
+- 浏览器每次进入或刷新有效页面发送 `POST /api/page-views`，载荷为 `{id: UUID, path: pathname}`；事件 ID 去重。查询参数、IP 和账号标识不写入浏览记录；GET 数据接口、分页预加载与重复渲染不计数。匿名访客只能上报公开页，私有和管理页面按现有权限校验，并沿用公开预览限流。此统计是浏览器上报的运营数据，不保证识别所有自动化访问；拦截上报或网络失败会造成漏计。
+- 需求管理列表、编辑页及详情的 `viewCount` 合并原始需求详情与关联公开案例详情的浏览量；独立案例记录自身浏览量。编辑页本身只计入整站 PV。
+- 登录用户可在公开案例卡片或详情点击「收藏需求」，在「我的收藏」查看。`PUT /api/cases/:id/favorite` 收藏，`DELETE /api/cases/:id/favorite` 取消，两者均为幂等操作；仅允许收藏已发布案例。
+- `GET /api/cases?favorites=true&page=1&pageSize=20` 返回当前账号收藏且仍发布的案例，按收藏时间排序；使用现有 `sort=newest|oldest`、筛选及分页协议。列表与详情返回当前账号的 `favorited` 布尔值。下架后隐藏收藏，重新发布后恢复；取消收藏只修改当前账号的记录。
+
 审核发布：`POST /api/requirements/:id/review`，例如：
 ```json
 {"decision":"approve","approvedFileIds":[]}

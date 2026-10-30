@@ -1,0 +1,506 @@
+#!/usr/bin/env python3
+"""Panel lens-diversity gate (self-review Phase 2.6, --panel).
+
+A multi-agent panel is only worth its cost if its reviewers cover *distinct*
+concern axes. Left unchecked, independent reviewers converge on the same easy
+themes (everyone flags "missing calibration") while whole high-risk axes go
+unprobed — the panel collapses to fewer effective lenses than reviewers, and
+the editor synthesis cannot tell monoculture from genuine consensus. This gate
+post-processes the reviewers' structured output (the panel_review_template
+schema the editor already collects) and reports these diversity and panel-independence failures:
+
+  UNCOVERED_AXIS     an expected high-risk axis for this research type produced
+                     ZERO major findings across the whole panel. Mirrors the
+                     "completeness critic" pattern: name what nobody probed so
+                     the editor can re-probe it before finalizing. (Major)
+  FAMILY_MONOCULTURE the panel's major findings concentrate in ONE concern
+                     family beyond a threshold (one family holds the majority),
+                     a signal the lenses converged rather than spanned the
+                     manuscript. (Major)
+  LENS_COLLAPSE      one reviewer contributed only families that another
+                     reviewer already covered — a fully-redundant lens that
+                     added no independent signal. Distinct from healthy
+                     CONSENSUS (a reviewer agreeing on SOME themes but also
+                     raising at least one family nobody else did). Exempt when
+                     the roster declares that reviewer on a DIFFERENT substrate
+                     from the generator: agreement reached from another substrate
+                     is corroboration, not a redundant assignment, and it is the
+                     very lens SUBSTRATE_MONOCULTURE requires. Exempted ids are
+                     reported in summary.lens_collapse_substrate_exempt. (Flag)
+  SUBSTRATE_MONOCULTURE  every reviewer the roster declares shares the *generator's*
+                     model substrate — a same-model panel inherits the blind spots that
+                     produced the draft and is not an independent check. Fires only when
+                     the roster declares the generator's and the reviewers' substrates and
+                     none differs; absent substrate info => skipped. (Major)
+
+Healthy consensus is preserved: a finding family raised by ≥2 reviewers is a
+strength, not a defect. The gate only fires LENS_COLLAPSE when a reviewer's
+ENTIRE contribution is redundant, and UNCOVERED_AXIS/MONOCULTURE on
+panel-level coverage, never on agreement per se.
+
+INPUTS
+  --panel  JSON file. Either a list of reviewer objects, or an object with a
+           "reviewers" list (and optional "research_type"). Each reviewer
+           object needs reviewer_id, expertise_area, and major[] (with heading
+           and/or comment text); minor[] is ignored for axis coverage.
+  --research-type  one of: survival, sr_ma, radiomics, dta, observational,
+           narrative (synonyms accepted). Overrides any value in the JSON.
+           When unknown/absent, UNCOVERED_AXIS is skipped (cannot know the
+           expected axes) and noted in the summary.
+  --roster  roster manifest of SPAWNED reviewers. A list of ids, or
+           {reviewers|roster: [{reviewer_id, substrate}]} with an optional top-level
+           "generator_substrate". Enables PANEL_UNDERRETURN (spawned vs returned) and
+           SUBSTRATE_MONOCULTURE (independence). substrate is a coarse lane label
+           ("claude" | "codex" | "gpt" | "human"), not a model version.
+
+OUTPUT
+  A diversity table (stdout) and, with --out, a JSON artifact:
+    {panel, research_type, claims[{verdict, severity, detail, where}], summary}
+  summary carries the family histogram, concentration index, and the
+  expected/covered/uncovered axes. Exit 1 (with --strict) when any Major claim
+  exists; exit 2 on input error.
+
+Stdlib-only (json / re / argparse / pathlib). Exit codes: 0 clean (or
+report-only), 1 Major claim(s) found (with --strict), 2 input/usage error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+# Concern families, aligned to the panel's per-domain focus checklists and the
+# self-review A–J category system. Each finding is assigned to the FIRST family
+# whose lexicon matches its text; order is most-specific to most-generic so a
+# leakage finding is not swallowed by the generic "statistics" family.
+FAMILY_LEXICON: list[tuple[str, re.Pattern]] = [
+    ("search_screening", re.compile(
+        r"search strateg|screening|eligibilit|inclusion criteri|exclusion criteri|"
+        r"database\b|grey literature|gray literature|duplicate (?:removal|record)|"
+        r"prisma flow|records identified|study selection", re.IGNORECASE)),
+    ("design_leakage", re.compile(
+        r"leakage|data (?:split|leak)|train(?:ing|/test| test)|test set|"
+        r"contaminat|allocation|randomi[sz]|immortal time|time[-\s]?zero|"
+        r"selection bias|spectrum bias|case[-\s]?control selection|"
+        r"reference standard|verification bias", re.IGNORECASE)),
+    ("confounding", re.compile(
+        r"confound|residual confounding|covariate|adjust(?:ment|ed)|mediator|"
+        r"collider|confounding by indication|propensity", re.IGNORECASE)),
+    ("imaging", re.compile(
+        r"acquisition|scanner|sequence|segmentation|voxel|kernel|reconstruction|"
+        r"combat|harmoni[sz]|slice thickness|field strength|radiomic feature|"
+        r"window(?:ing| level)|protocol heterogeneity", re.IGNORECASE)),
+    ("reporting", re.compile(
+        r"strobe|tripod|prisma\b|consort|claim\b|stard|reporting (?:guideline|standard|"
+        r"completeness)|checklist|flow diagram|disclosure|registration|protocol "
+        r"deviation|abstract (?:inconsisten|mismatch)", re.IGNORECASE)),
+    ("reproducibility", re.compile(
+        r"reproducib|code availab|data availab|random seed|\bseed\b|script\b|"
+        r"open (?:data|code)|version pin", re.IGNORECASE)),
+    ("statistics", re.compile(
+        r"calibrat|discriminat|\bauc\b|c[-\s]?statistic|delong|confidence interval|"
+        r"\bci\b|heterogeneit|\bi2\b|i\^?2|pooling|pooled|random[-\s]?effects|"
+        r"multiplicit|multiple compar|\bp[-\s]?value|\bpower\b|sample size|"
+        r"model specif|proportional hazard|missing data|imputation|competing risk|"
+        r"events per variable|overfitting|effect size|subdistribution|"
+        # Type-agnostic statistical vocabulary a reader / agreement study raises but the
+        # meta-analysis-flavoured list above missed — effect measures, resampling,
+        # inter-rater agreement, multiplicity siblings, common tests, Bayesian. Without
+        # these a statistics-dedicated reviewer's majors classified as "other" and the
+        # statistics axis looked uncovered (false UNCOVERED_AXIS Major).
+        r"odds ratio|hazard ratio|risk ratio|relative risk|rate ratio|"
+        r"bootstrap|permutation|jackknife|monte[-\s]?carlo|"
+        r"\bkappa\b|κ|inter[-\s]?rater|intraclass|\bicc\b|\bac1\b|concordance|"
+        r"bonferroni|false discovery|\bfdr\b|\bholm\b|family[-\s]?wise|"
+        r"wilcoxon|mann[-\s]?whitney|mcnemar|log[-\s]?rank|chi[-\s]?squared?|fisher'?s? exact|"
+        r"bayesian|credible interval|posterior distribution|standard deviation|standard error",
+        re.IGNORECASE)),
+    ("clinical", re.compile(
+        r"clinical|actionab|guideline|management|generali[sz]ab|applicab|"
+        r"external validit|patient[-\s]?care|over(?:reach|claim)|"
+        r"clinical (?:relevance|utility|significance)", re.IGNORECASE)),
+]
+
+# Expected high-risk axes per research type (each SHOULD yield ≥1 major). Mirrors
+# the Phase 2.6 reviewer-set table; optional axes (e.g. imaging when the exposure
+# is non-imaging) are not required and so are omitted here.
+EXPECTED_AXES: dict[str, list[str]] = {
+    "survival": ["statistics", "clinical"],
+    "sr_ma": ["search_screening", "clinical", "statistics"],
+    "radiomics": ["imaging", "statistics", "clinical"],
+    "dta": ["design_leakage", "statistics", "clinical"],
+    "observational": ["confounding", "clinical", "statistics"],
+    "narrative": ["clinical", "reporting"],
+}
+
+RESEARCH_TYPE_SYNONYMS: dict[str, str] = {
+    "survival": "survival", "prognostic": "survival", "cohort": "survival",
+    "sr": "sr_ma", "ma": "sr_ma", "sr_ma": "sr_ma", "sr/ma": "sr_ma",
+    "systematic review": "sr_ma", "meta-analysis": "sr_ma", "meta analysis": "sr_ma",
+    "radiomics": "radiomics", "feature": "radiomics",
+    "dta": "dta", "diagnostic": "dta", "diagnostic-accuracy": "dta", "ai model": "dta",
+    "observational": "observational", "strobe": "observational",
+    "narrative": "narrative", "review article": "narrative", "sanra": "narrative",
+}
+
+MONOCULTURE_MIN_MAJORS = 4   # too few majors to call concentration meaningful
+MONOCULTURE_SHARE = 0.60     # one family holding > this share = monoculture
+
+
+def normalize_research_type(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    key = raw.strip().lower()
+    if key in RESEARCH_TYPE_SYNONYMS:
+        return RESEARCH_TYPE_SYNONYMS[key]
+    for syn, canon in RESEARCH_TYPE_SYNONYMS.items():
+        if syn in key:
+            return canon
+    return None
+
+
+def classify(text: str) -> str:
+    for family, pat in FAMILY_LEXICON:
+        if pat.search(text):
+            return family
+    return "other"
+
+
+def finding_text(major: dict) -> str:
+    parts = [str(major.get(k, "")) for k in ("heading", "comment", "location")]
+    return " ".join(p for p in parts if p)
+
+
+def load_reviewers(obj) -> tuple[list[dict], str | None]:
+    if isinstance(obj, list):
+        return obj, None
+    if isinstance(obj, dict):
+        revs = obj.get("reviewers")
+        if isinstance(revs, list):
+            return revs, obj.get("research_type")
+    raise ValueError("panel JSON must be a list of reviewers or an object with a 'reviewers' list")
+
+
+def load_roster_ids(path: str | None) -> set[str] | None:
+    """The reviewer_ids that were SPAWNED (a roster manifest written before spawning).
+    Accepts a list of ids, a list of {reviewer_id: ...}, or {reviewers|roster: [...]}.
+    Returns None when no roster is given (roster checks then stay silent)."""
+    if not path:
+        return None
+    obj = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(obj, list):
+        ids: set[str] = set()
+        for x in obj:
+            if isinstance(x, str):
+                ids.add(x)
+            elif isinstance(x, dict) and x.get("reviewer_id"):
+                ids.add(str(x["reviewer_id"]))
+        return ids
+    if isinstance(obj, dict):
+        revs = obj.get("reviewers") or obj.get("roster") or []
+        return {str(r["reviewer_id"]) for r in revs
+                if isinstance(r, dict) and r.get("reviewer_id")}
+    return set()
+
+
+def load_roster_substrates(path: str | None) -> tuple[str | None, dict[str, str]]:
+    """The generator's substrate and each spawned reviewer's substrate, from the roster
+    manifest. Returns (generator_substrate, {reviewer_id: substrate}); either may be empty
+    when the roster is a bare id list or omits substrate fields (SUBSTRATE_MONOCULTURE then
+    stays silent). Substrate is a coarse lane label ("claude" | "codex" | "gpt" | "human")."""
+    if not path:
+        return None, {}
+    obj = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(obj, dict):
+        gen = obj.get("generator_substrate")
+        revs = obj.get("reviewers") or obj.get("roster") or []
+    elif isinstance(obj, list):
+        gen, revs = None, obj
+    else:
+        return None, {}
+    subs: dict[str, str] = {}
+    for r in revs:
+        if isinstance(r, dict) and r.get("reviewer_id") and r.get("substrate"):
+            subs[str(r["reviewer_id"])] = str(r["substrate"])
+    return (str(gen) if gen else None), subs
+
+
+def check(reviewers: list[dict], research_type: str | None,
+          roster_ids: set[str] | None = None,
+          generator_substrate: str | None = None,
+          reviewer_substrates: dict[str, str] | None = None) -> tuple[list[dict], dict]:
+    claims: list[dict] = []
+
+    returned_ids = {str(rev.get("reviewer_id") or f"R{i + 1}")
+                    for i, rev in enumerate(reviewers)}
+
+    # 0) PANEL_UNDERRETURN — spawned (roster) vs returned (panel). The failure this
+    # exists for: a --panel run spawns N reviewers and some/all return nothing, so the
+    # panel JSON is thin or empty and NOTHING errors — the run reads as "completed".
+    # Set arithmetic over the two id lists turns a silent absence into a Major. Silent
+    # (no roster given): the caller did not record who was spawned, so nothing to compare.
+    if roster_ids is not None:
+        missing = sorted(roster_ids - returned_ids)
+        n_returned = len(reviewers)
+        if n_returned < 2 or missing:
+            if n_returned < 2:
+                detail = (f"only {n_returned} of {len(roster_ids)} rostered reviewer(s) returned "
+                          f"a parseable review; a panel with fewer than 2 returned reviews is a "
+                          f"FAILED run, not a thin one — do not synthesize it or report it as a "
+                          f"review. Non-returning: {', '.join(missing) or '(all)'}. Re-spawn on a "
+                          f"different substrate (or route to a human co-author) before treating "
+                          f"this as a panel.")
+            else:
+                detail = (f"{n_returned} of {len(roster_ids)} rostered reviewers returned; "
+                          f"{len(missing)} did not: {', '.join(missing)}. A missing reviewer is a "
+                          f"gap, not an absence — re-spawn the missing lens(es), or state "
+                          f"explicitly that synthesis used only the returned subset.")
+            claims.append({
+                "verdict": "PANEL_UNDERRETURN",
+                "severity": "Major",
+                "detail": detail,
+                "where": f"roster: {len(roster_ids)} spawned, {n_returned} returned",
+            })
+
+    # 0b) SUBSTRATE_MONOCULTURE — a generator/critic/verifier sharing a model substrate have
+    # correlated blind spots; a same-model-only panel is not an independent check. Fires only
+    # when the roster declares the generator's substrate AND >=1 reviewer's substrate, and none
+    # of the declared reviewer substrates differs from the generator's. Absent substrate info =>
+    # skip (older rosters / no --roster), so this never false-positives on an unlabelled panel.
+    if generator_substrate and reviewer_substrates:
+        declared = {rid: s for rid, s in reviewer_substrates.items() if s}
+        if declared:
+            gen = generator_substrate.strip().lower()
+            independent = sorted(rid for rid, s in declared.items() if s.strip().lower() != gen)
+            if not independent:
+                claims.append({
+                    "verdict": "SUBSTRATE_MONOCULTURE",
+                    "severity": "Major",
+                    "detail": (f"all {len(declared)} declared reviewer(s) share the generator's "
+                               f"substrate ('{generator_substrate}'); a same-model panel inherits the "
+                               f"generator's blind spots and is not an independent check. Route at "
+                               f"least one lens to a different substrate (the Codex adversarial path) "
+                               f"or a human co-author before treating this as an independent panel."),
+                    "where": f"substrate: generator={generator_substrate}, "
+                             f"reviewers={sorted(set(declared.values()))}",
+                })
+
+    # Per-reviewer families (set of distinct families this reviewer raised as majors)
+    rev_families: dict[str, set[str]] = {}
+    family_hist: dict[str, int] = {}
+    n_majors = 0
+    for i, rev in enumerate(reviewers):
+        rid = str(rev.get("reviewer_id") or f"R{i + 1}")
+        fams: set[str] = set()
+        for maj in rev.get("major", []) or []:
+            fam = classify(finding_text(maj))
+            fams.add(fam)
+            family_hist[fam] = family_hist.get(fam, 0) + 1
+            n_majors += 1
+        rev_families[rid] = fams
+
+    covered = set(family_hist)
+    covered.discard("other")
+
+    # 1) UNCOVERED_AXIS — only when we know the expected axes
+    expected: list[str] = []
+    uncovered: list[str] = []
+    if research_type and research_type in EXPECTED_AXES:
+        expected = EXPECTED_AXES[research_type]
+        uncovered = [ax for ax in expected if family_hist.get(ax, 0) == 0]
+        for ax in uncovered:
+            claims.append({
+                "verdict": "UNCOVERED_AXIS",
+                "severity": "Major",
+                "detail": (f"no major finding addresses the '{ax}' axis, which a "
+                           f"{research_type} panel is expected to probe; the editor "
+                           f"should re-probe it before finalizing"),
+                "where": f"expected axes for {research_type}: {', '.join(expected)}",
+            })
+
+    # 2) FAMILY_MONOCULTURE — concentration of majors in one family
+    hhi = 0.0
+    top_family = None
+    top_share = 0.0
+    if n_majors:
+        shares = {f: c / n_majors for f, c in family_hist.items() if f != "other"}
+        hhi = sum(s * s for s in shares.values())
+        if shares:
+            top_family, top_share = max(shares.items(), key=lambda kv: kv[1])
+        if n_majors >= MONOCULTURE_MIN_MAJORS and top_share > MONOCULTURE_SHARE:
+            claims.append({
+                "verdict": "FAMILY_MONOCULTURE",
+                "severity": "Major",
+                "detail": (f"{top_share:.0%} of major findings fall in the '{top_family}' "
+                           f"family ({family_hist.get(top_family, 0)}/{n_majors}); the panel "
+                           f"converged on one axis rather than spanning the manuscript"),
+                "where": "family histogram: " + ", ".join(
+                    f"{f}={c}" for f, c in sorted(family_hist.items(), key=lambda kv: -kv[1])),
+            })
+
+    # 3) LENS_COLLAPSE — a reviewer whose every family is also covered by another.
+    #
+    # Exempt: a reviewer whose declared substrate DIFFERS from the generator's. For a
+    # same-substrate lens, raising only families others already raised is evidence of a
+    # redundant assignment. For a cross-substrate lens it is close to the opposite —
+    # independent corroboration is the strongest signal a panel can produce, and that lens is
+    # exactly what SUBSTRATE_MONOCULTURE (0b, above) requires the panel to contain. Firing
+    # here told the editor to reconsider the one reviewer keeping the panel independent.
+    # Gated on both substrates being declared, so an unlabelled roster is unaffected.
+    gen_sub = (generator_substrate or "").strip().lower()
+    declared_subs = {rid: str(s).strip().lower()
+                     for rid, s in (reviewer_substrates or {}).items() if s}
+    cross_substrate_exempt: list[str] = []
+    for rid, fams in rev_families.items():
+        own = {f for f in fams if f != "other"}
+        if not own:
+            continue
+        others = set()
+        for other_rid, other_fams in rev_families.items():
+            if other_rid != rid:
+                others |= {f for f in other_fams if f != "other"}
+        if own and own <= others and gen_sub and declared_subs.get(rid, gen_sub) != gen_sub:
+            # Recorded, never silent: a skipped check that prints nothing is
+            # indistinguishable from a check that passed.
+            cross_substrate_exempt.append(rid)
+            continue
+        if own and own <= others:  # fully subsumed by other reviewers
+            claims.append({
+                "verdict": "LENS_COLLAPSE",
+                "severity": "Flag",
+                "detail": (f"reviewer {rid} raised only families also covered by other "
+                           f"reviewers ({', '.join(sorted(own))}); this lens added no "
+                           f"independent axis — confirm it is a genuine consensus, not a "
+                           f"redundant reviewer assignment"),
+                "where": f"reviewer {rid}",
+            })
+
+    # 4) THIN_PANEL
+    if len(reviewers) < 2:
+        claims.append({
+            "verdict": "THIN_PANEL",
+            "severity": "Flag",
+            "detail": (f"only {len(reviewers)} reviewer(s); a panel needs ≥2 independent "
+                       f"lenses for diversity to be meaningful"),
+            "where": "panel composition",
+        })
+
+    summary = {
+        "n_reviewers": len(reviewers),
+        "n_majors": n_majors,
+        "family_histogram": family_hist,
+        "concentration_hhi": round(hhi, 3),
+        "top_family": top_family,
+        "top_family_share": round(top_share, 3),
+        "expected_axes": expected,
+        "covered_axes": sorted(covered),
+        "uncovered_axes": uncovered,
+        "research_type_known": bool(research_type and research_type in EXPECTED_AXES),
+        "lens_collapse_substrate_exempt": sorted(cross_substrate_exempt),
+    }
+    return claims, summary
+
+
+def analyze(panel: str, research_type_arg: str | None, roster_arg: str | None = None) -> dict:
+    p = Path(panel)
+    if not p.is_file():
+        sys.stderr.write(f"ERROR: panel JSON not found: {panel}\n")
+        sys.exit(2)
+    try:
+        obj = json.loads(p.read_text(encoding="utf-8"))
+        reviewers, rt_in_json = load_reviewers(obj)
+    except (ValueError, json.JSONDecodeError) as exc:
+        sys.stderr.write(f"ERROR: {exc}\n")
+        sys.exit(2)
+    try:
+        roster_ids = load_roster_ids(roster_arg)
+        generator_substrate, reviewer_substrates = load_roster_substrates(roster_arg)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        sys.stderr.write(f"ERROR: roster: {exc}\n")
+        sys.exit(2)
+
+    research_type = normalize_research_type(research_type_arg) or normalize_research_type(rt_in_json)
+    claims, summary = check(reviewers, research_type, roster_ids,
+                            generator_substrate, reviewer_substrates)
+    if generator_substrate:
+        summary["generator_substrate"] = generator_substrate
+        summary["reviewer_substrates"] = reviewer_substrates
+    if roster_ids is not None:
+        returned = {str(rev.get("reviewer_id") or f"R{i + 1}") for i, rev in enumerate(reviewers)}
+        summary["rostered"] = len(roster_ids)
+        summary["returned"] = len(reviewers)
+        summary["not_returned"] = sorted(roster_ids - returned)
+    n_major = sum(1 for c in claims if c["severity"] == "Major")
+    summary["n_claims"] = len(claims)
+    summary["n_major"] = n_major
+    summary["n_flag"] = len(claims) - n_major
+    summary["verdict"] = "MAJOR_CANDIDATE" if n_major else "OK"
+    return {
+        "panel": str(p),
+        "research_type": research_type,
+        "claims": claims,
+        "summary": summary,
+    }
+
+
+def render(result: dict) -> str:
+    lines = ["| Check | Severity | Detail |", "|---|---|---|"]
+    for c in result["claims"]:
+        lines.append(f"| {c['verdict']} | {c['severity']} | {c['detail']} |")
+    if len(lines) == 2:
+        lines.append("| (none) | — | panel lenses span distinct axes; no monoculture |")
+    return "\n".join(lines)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Panel lens-diversity gate (Phase 2.6, --panel).")
+    ap.add_argument("--panel", required=True, help="reviewers JSON (list or {reviewers:[...]})")
+    ap.add_argument("--roster", help="roster manifest of SPAWNED reviewer_ids written before "
+                                     "spawning (list of ids, or {reviewers|roster:[{reviewer_id}]}); "
+                                     "enables PANEL_UNDERRETURN when the returned panel is missing "
+                                     "rostered reviewers or has <2 returned")
+    ap.add_argument("--research-type", help="survival|sr_ma|radiomics|dta|observational|narrative")
+    ap.add_argument("--out", help="write JSON artifact to this path")
+    ap.add_argument("--strict", action="store_true", help="exit 1 if any Major claim exists")
+    ap.add_argument("--quiet", action="store_true", help="suppress stdout table")
+    args = ap.parse_args()
+
+    result = analyze(args.panel, args.research_type, args.roster)
+
+    if not args.quiet:
+        print("=" * 41)
+        print(" Panel Lens-Diversity (Phase 2.6)")
+        print("=" * 41)
+        print(render(result))
+        print()
+        s = result["summary"]
+        if not s["research_type_known"]:
+            print("NOTE: research type unknown — UNCOVERED_AXIS skipped "
+                  "(pass --research-type to enable axis-coverage checks).")
+        if s.get("lens_collapse_substrate_exempt"):
+            print("NOTE: LENS_COLLAPSE exempt for "
+                  f"{', '.join(s['lens_collapse_substrate_exempt'])} — declared on a different "
+                  f"substrate from the generator, so full agreement reads as cross-substrate "
+                  f"corroboration, not a redundant lens.")
+        if s["n_major"]:
+            print(f"MAJOR candidate: {s['n_major']} diversity failure(s); "
+                  f"covered axes: {', '.join(s['covered_axes']) or '(none)'}.")
+        else:
+            print(f"OK: {s['n_reviewers']} reviewers spanning "
+                  f"{len(s['covered_axes'])} distinct axes "
+                  f"(HHI={s['concentration_hhi']}).")
+
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(json.dumps({"detector": "check_panel_diversity", **result}, indent=2), encoding="utf-8")
+        if not args.quiet:
+            print(f"\nwrote {args.out}")
+
+    return 1 if (args.strict and result["summary"]["n_major"]) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

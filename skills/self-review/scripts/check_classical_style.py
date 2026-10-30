@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""Classical-style body lint (self-review §J / write-paper Phase 7.1).
+
+A senior meta-analysis reviewer reads several surface signals as "AI wrote this"
+or as a policy violation. They are all deterministic greps, so they belong in a
+gate rather than a prose checklist (manuscript-style-classical.md §5/§6/§7/§8):
+
+  SECTION_SYMBOL        (Major) the § symbol anywhere in the body — the canonical
+                        AI tell; also catches "see Methods §2" self-references.
+  INBODY_AI_DISCLOSURE  an AI/LLM-use disclosure paragraph in the body. WHERE IT
+                        BELONGS IS A JOURNAL FACT, and the journals disagree: npj
+                        Digital Medicine says "document use in Methods", Investigative
+                        Radiology says cover letter + Acknowledgments, Diabetes &
+                        Metabolism Journal says title page. So the placement is read
+                        from the target's profile (--profile) or given inline
+                        (--disclosure-placement):
+                          body-legitimate target (methods / acknowledgements) -> silent
+                          title-page / cover-letter-only target -> Major
+                          NO target recorded -> Minor, naming the ambiguity rather
+                          than asserting a placement it cannot know.
+  ELIGIBILITY_PROSE     (Minor) eligibility/inclusion criteria written as a prose
+                        sentence rather than a numbered list.
+  DECIMAL_INCONSISTENCY (Minor) OR/HR/RR reported with mixed decimal places (some
+                        2 dp, some 3 dp) in the same manuscript.
+  PERCENT_DECIMALS      (Minor) percentage(s) reported to >1 decimal place ("35.14%").
+                        Several journals (e.g. KJR) require one-decimal percentages at
+                        technical check; journal-dependent, so report-only.
+  EM_DASH_OVERUSE       (Minor) more than 25 *prose* em-dashes — a generation tell.
+                        Structural dashes (markdown table cells incl. "—" N/A
+                        placeholders and panel-label captions, ORCID separators,
+                        author/affiliation lines) are excluded and reported
+                        separately, so a cohort manuscript with large baseline
+                        tables is not pushed into destructive edits on correct
+                        table dashes.
+
+INPUTS
+  --manuscript   manuscript markdown/text (required).
+  --em-dash-max  em-dash threshold (default 25).
+
+OUTPUT
+  A reconciliation table (stdout) and, with --out, a JSON artifact:
+    {manuscript, claims[{verdict, severity, detail, where}], summary}
+  Exit 1 (with --strict) when any Major-severity claim exists (§ symbol or in-body
+  AI disclosure).
+
+Stdlib-only (json / re / argparse / pathlib). Exit codes: 0 clean (or report-only),
+1 Major claim(s) found (with --strict), 2 input/usage error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+# The § AI-tell is a SECTION CROSS-REFERENCE ("Methods §2", "(see §3.1)", "§L4"),
+# not the dagger-family footnote markers (†, ‡, §, ¶) that legitimately mark
+# author/affiliation footnotes and co-senior-author lines (e.g. "§ Dr. Hong and
+# Dr. Kim are co-senior authors", a superscript "^§"). Count only § that is part
+# of a section reference: § followed by a section id (digit, or up to 3 letters
+# then a digit — §3, §L4, §S1, §2.1), or a section noun immediately before §.
+SECTION_XREF = re.compile(
+    r"§\s*[A-Za-z]{0,3}\d"
+    r"|(?:see|in|per|section|sections|methods?|results?|discussion|introduction|"
+    r"appendix|appendices|supplement(?:ary|al)?|table|figure)\s+§",
+    re.IGNORECASE)
+
+INBODY_AI_DISCLOSURE = re.compile(
+    r"generative ai was not used|artificial intelligence disclosure|"
+    r"during the preparation of (?:this|the) (?:manuscript|work|study)[^.]{0,120}?"
+    r"(?:used|use[d]?|employed)[^.]{0,60}?(?:ai|gpt|chatgpt|claude|copilot|gemini|language model)",
+    re.IGNORECASE)
+
+# A paper whose SUBJECT is AI-use disclosure (a reporting-methods / QC paper about
+# disclosure statements) contains such phrasing as an object of study, not as its
+# own disclosure. When the match sits next to disclosure-as-subject framing, do not
+# fire INBODY_AI_DISCLOSURE. Kept tight so a genuine in-body disclosure still fires.
+AI_DISCLOSURE_SUBJECT = re.compile(
+    r"ai[-\s]?disclosure|disclosure (?:statement|practice|policy|policies|requirement|item)|"
+    r"reporting of ai (?:use|tools|assistance)|MI[-\s]?CLEAR|"
+    r"(?:this|the present) (?:paper|study|work|review|analysis)\b[^.]{0,60}?"
+    r"(?:disclosure|ai use|ai tools|ai assistance|reporting)",
+    re.IGNORECASE)
+
+ELIGIBILITY_LEAD = re.compile(
+    r"(?:studies|articles|records|participants|patients|trials)\s+were\s+eligible\s+if|"
+    r"eligibility criteria were|inclusion criteria (?:were|included)|"
+    r"(?:studies|articles) were included if",
+    re.IGNORECASE)
+NUMBERED_MARKER = re.compile(r"\(\s*1\s*\)|\(\s*i\s*\)|(?:^|\s)1\.\s")
+
+EFFECT_DECIMAL = re.compile(
+    r"(?:\b(?:a?OR|a?HR|RR|sHR)\b|\bodds ratio\b|\bhazard ratio\b|\brisk ratio\b)"
+    r"\s*(?:of|was|were|=|:|,)?\s*(\d+\.(\d+))", re.IGNORECASE)
+
+# A percentage reported to >1 decimal place ("35.14%"). Several journals (e.g. KJR)
+# require one-decimal percentages at technical check ("35.1%"). Journal-dependent.
+PERCENT_DECIMAL = re.compile(r"\b\d{1,3}\.\d{2,}\s*%")
+
+
+# Where an AI-use disclosure belongs is set by the target journal, not by house style. A
+# profile states it in prose already ("document use in Methods section", "declared on title
+# page", "disclosed in cover letter and Acknowledgments"); this reads that line if the profile
+# carries the explicit machine-readable form, and otherwise falls back to the prose.
+DISCLOSURE_PLACEMENT_LINE = re.compile(
+    r"^\s*[-*]?\s*\*{0,2}AI[-\s]use disclosure placement\*{0,2}\s*:\s*(.+)$", re.M | re.I)
+# Tokens meaning "the body is where it goes" — if any appears, an in-body paragraph is correct.
+# CONVENTION for whoever adds a placement line to a profile: if the journal puts the disclosure
+# in the body but names a section none of these words cover — JACC: Advances asks for a
+# "Declaration of generative AI …" section immediately above the References — write "(body)"
+# in the placement string. Without it the location reads as non-body and the author is told to
+# move a paragraph the journal put exactly where it is, which is the failure this whole gate
+# exists to stop.
+# "acknowledg" is a STEM — a trailing \b breaks on "Acknowledgments"/"Acknowledgements",
+# which is exactly how the placement is written in the profiles that use it.
+BODY_PLACEMENT = re.compile(r"\b(?:methods?|acknowledg\w*|body|main text)\b", re.I)
+
+
+def disclosure_placement(profile_text: str | None, inline: str | None) -> str | None:
+    """The declared placement string, or None when nothing was recorded."""
+    if inline:
+        return inline
+    if not profile_text:
+        return None
+    m = DISCLOSURE_PLACEMENT_LINE.search(profile_text)
+    return m.group(1).strip() if m else None
+
+
+def check(text: str, em_dash_max: int, placement: str | None = None) -> list[dict]:
+    claims = []
+
+    # SECTION_SYMBOL (Major) — only § used as a section cross-reference, not the
+    # dagger-family author/affiliation footnote markers.
+    xrefs = list(SECTION_XREF.finditer(text))
+    if xrefs:
+        n = len(xrefs)
+        first = xrefs[0].start()
+        claims.append({
+            "verdict": "SECTION_SYMBOL",
+            "severity": "Major",
+            "detail": f"a § section cross-reference appears {n} time(s) — a senior-reviewer "
+                      f"AI tell; replace with the section name (manuscript-style-classical §6)",
+            "where": text[max(0, first - 30):first + 20].replace("\n", " ").strip()[:120],
+        })
+
+    # INBODY_AI_DISCLOSURE (Major) — unless the paper's SUBJECT is AI disclosure
+    # (a reporting-methods paper naming the pattern, not committing it).
+    m = INBODY_AI_DISCLOSURE.search(text)
+    if m and AI_DISCLOSURE_SUBJECT.search(text[max(0, m.start() - 200):m.end() + 200]):
+        m = None
+    if m:
+        # The target decides. Firing "this belongs on the title page" at a journal that
+        # requires it in Methods tells the author to move a paragraph the journal wants
+        # exactly where it is — and this verdict fired that way across five real projects,
+        # none of which could be scored real or spurious without knowing the target.
+        if placement and BODY_PLACEMENT.search(placement):
+            pass  # the body IS where this journal puts it
+        elif placement:
+            claims.append({
+                "verdict": "INBODY_AI_DISCLOSURE",
+                "severity": "Major",
+                "detail": (f"an AI/LLM-use disclosure paragraph is in the body, but the target "
+                           f"places it in: {placement} (manuscript-style-classical §7)"),
+                "where": m.group(0)[:120],
+            })
+        else:
+            claims.append({
+                "verdict": "INBODY_AI_DISCLOSURE",
+                "severity": "Minor",
+                "detail": ("an AI/LLM-use disclosure paragraph is in the body and no target "
+                           "journal is recorded — journals disagree (npj Digital Medicine asks "
+                           "for Methods, Diabetes & Metabolism Journal for the title page, "
+                           "Investigative Radiology for the cover letter and Acknowledgments), "
+                           "so pass --profile or --disclosure-placement to settle it"),
+                "where": m.group(0)[:120],
+            })
+
+    # ELIGIBILITY_PROSE (Minor)
+    em = ELIGIBILITY_LEAD.search(text)
+    if em and not NUMBERED_MARKER.search(text[em.start():em.start() + 320]):
+        claims.append({
+            "verdict": "ELIGIBILITY_PROSE",
+            "severity": "Minor",
+            "detail": "eligibility/inclusion criteria are written as prose; senior reviewers "
+                      "expect a numbered list (1)…(2)…(3) (manuscript-style-classical §5)",
+            "where": em.group(0)[:120],
+        })
+
+    # DECIMAL_INCONSISTENCY (Minor)
+    dps = {len(mm.group(2)) for mm in EFFECT_DECIMAL.finditer(text)}
+    if len(dps) > 1:
+        claims.append({
+            "verdict": "DECIMAL_INCONSISTENCY",
+            "severity": "Minor",
+            "detail": f"OR/HR/RR reported with mixed decimal places ({sorted(dps)}); "
+                      f"standardize (OR/HR to 2 dp)",
+            "where": "effect-size decimals",
+        })
+
+    # PERCENT_DECIMALS (Minor) — percentages to >1 decimal place. Several journals
+    # (e.g. KJR) require one-decimal percentages at technical check ("35.1%" not
+    # "35.14%"); journal-dependent, so report-only (Minor, does not fail --strict).
+    pcts = [mm.group(0).strip() for mm in PERCENT_DECIMAL.finditer(text)]
+    if pcts:
+        ex = ", ".join(dict.fromkeys(pcts))  # dedup, keep order
+        claims.append({
+            "verdict": "PERCENT_DECIMALS",
+            "severity": "Minor",
+            "detail": f"{len(pcts)} percentage(s) reported to >1 decimal place "
+                      f"(e.g. {ex[:80]}); several journals require one decimal at "
+                      f"technical check (35.1% not 35.14%)",
+            "where": "percentage decimals",
+        })
+
+    # EM_DASH_OVERUSE (Minor) — count PROSE em-dashes only. Structural dashes are
+    # legitimate, not a generation tell: markdown table cells (incl. "—" = N/A
+    # placeholders and "(A) — label" panel captions), ORCID separators, and
+    # author/affiliation lines ("Name, MD — Department of …"). Counting them forces
+    # destructive edits on correct table dashes in cohort manuscripts with large
+    # Table 1 / Table 3.
+    prose_dash, structural_dash = _count_em_dashes(text)
+    if prose_dash > em_dash_max:
+        claims.append({
+            "verdict": "EM_DASH_OVERUSE",
+            "severity": "Minor",
+            "detail": f"{prose_dash} prose em-dashes (> {em_dash_max}); a generation tell — "
+                      f"replace some with commas/colons or split sentences "
+                      f"({structural_dash} structural em-dashes in tables/ORCID/affiliation "
+                      f"lines were excluded)",
+            "where": f"{prose_dash} prose em-dashes ({structural_dash} structural excluded)",
+        })
+
+    return claims
+
+
+_ORCID_RE = re.compile(r"\d{4}-\d{4}-\d{4}-\d{3}[\dXx]")
+# A credential token immediately before the dash, or an affiliation noun right
+# after it — the "Name, MD — Department of …" author/affiliation signature.
+_AFFIL_DASH_RE = re.compile(
+    r"\b(?:MD|PhD|MSc|MPH|MBBS|DO|DrPH|RN)\b[^—|]{0,20}—"
+    r"|—[^—|]{0,20}\b(?:Department|Division|Institute|Faculty|College|University|Hospital|Center|Centre)\b",
+    re.IGNORECASE)
+# Figure/table/panel caption lines ("(A) — obesity stratum", "Figure 1. …",
+# "*(A) S1 — …*") — structural, not prose.
+_CAPTION_RE = re.compile(
+    r"^\s*\*{0,2}(?:\(?[A-Za-z]\)|(?:Figure|Fig\.?|Table|Panel|Supplementary)\b)", re.IGNORECASE)
+
+
+def _count_em_dashes(text: str) -> tuple[int, int]:
+    """Return (prose, structural) em-dash counts. Structural = table rows, ORCID /
+    affiliation / author lines, and standalone-cell dashes; prose = everything else
+    (the genuine generation-tell surface)."""
+    prose = structural = 0
+    for line in text.splitlines():
+        n = line.count("—")
+        if not n:
+            continue
+        s = line.strip()
+        is_table = "|" in line
+        is_orcid = "orcid" in line.lower() or bool(_ORCID_RE.search(line))
+        is_standalone = bool(re.fullmatch(r"[-–—\s]*", s))
+        is_affil = bool(_AFFIL_DASH_RE.search(line))
+        is_caption = bool(_CAPTION_RE.match(line))
+        if is_table or is_orcid or is_standalone or is_affil or is_caption:
+            structural += n
+        else:
+            prose += n
+    return prose, structural
+
+
+def analyze(manuscript: str, em_dash_max: int, placement: str | None = None) -> dict:
+    p = Path(manuscript)
+    if not p.is_file():
+        sys.stderr.write(f"ERROR: manuscript not found: {manuscript}\n")
+        sys.exit(2)
+    claims = check(p.read_text(encoding="utf-8"), em_dash_max, placement)
+    n_major = sum(1 for c in claims if c["severity"] == "Major")
+    return {
+        "manuscript": str(p),
+        "disclosure_placement": placement,
+        "claims": claims,
+        "summary": {
+            "n_claims": len(claims),
+            "n_major": n_major,
+            "n_flag": len(claims) - n_major,
+            "verdict": "MAJOR_CANDIDATE" if n_major else ("FLAG" if claims else "OK"),
+        },
+    }
+
+
+def render(result: dict) -> str:
+    lines = ["| Check | Severity | Detail |", "|---|---|---|"]
+    for c in result["claims"]:
+        lines.append(f"| {c['verdict']} | {c['severity']} | {c['detail']} |")
+    if len(lines) == 2:
+        lines.append("| (none) | — | classical-style body conventions satisfied |")
+    return "\n".join(lines)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Classical-style body lint (§J).")
+    ap.add_argument("--manuscript", required=True, help="manuscript markdown/text")
+    ap.add_argument("--em-dash-max", type=int, default=25, help="em-dash threshold (default 25)")
+    ap.add_argument("--profile", help="target journal profile .md (for AI-disclosure placement)")
+    ap.add_argument("--disclosure-placement",
+                    help="where the target puts an AI-use disclosure, e.g. 'Methods' or "
+                         "'title page' — overrides --profile")
+    ap.add_argument("--out", help="write JSON artifact to this path")
+    ap.add_argument("--strict", action="store_true", help="exit 1 if any Major claim exists")
+    ap.add_argument("--quiet", action="store_true", help="suppress stdout table")
+    args = ap.parse_args()
+
+    profile_text = None
+    if args.profile:
+        pp = Path(args.profile)
+        if not pp.is_file():
+            sys.stderr.write(f"ERROR: profile not found: {args.profile}\n")
+            return 2
+        profile_text = pp.read_text(encoding="utf-8", errors="replace")
+    placement = disclosure_placement(profile_text, args.disclosure_placement)
+    result = analyze(args.manuscript, args.em_dash_max, placement)
+
+    if not args.quiet:
+        print("=" * 41)
+        print(" Classical-Style Body Lint (§J)")
+        print("=" * 41)
+        print(render(result))
+        print()
+        s = result["summary"]
+        if s["n_major"]:
+            print(f"MAJOR candidate: {s['n_major']} policy/AI-tell violation(s).")
+        elif s["n_flag"]:
+            print(f"FLAG: {s['n_flag']} style inconsistency(ies).")
+        else:
+            print("OK: classical-style body conventions satisfied.")
+
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(json.dumps({"detector": "check_classical_style", **result}, indent=2), encoding="utf-8")
+        if not args.quiet:
+            print(f"\nwrote {args.out}")
+
+    return 1 if (args.strict and result["summary"]["n_major"]) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

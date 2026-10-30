@@ -1,0 +1,91 @@
+schema_version: 2
+name: self-review
+layer: D
+owner_domain: own_manuscript_critique
+maturity: official
+when_to_use:
+  - Pre-submission self-criticism on the user's own manuscript across 10 review categories
+  - Generating Anticipated Major / Minor Comments before sending to senior co-authors
+  - Phase 2.5a numerical source-fidelity audit (CSV ↔ analysis ↔ manuscript ↔ primary paper)
+  - Producing R0-numbered comments that flow into /revise for the response document
+  - Multi-agent panel review (--panel) — parallel domain-expert reviewers + editor synthesis for a high-stakes pre-submission final pass
+when_NOT_to_use:
+  - Reviewing external (assigned) manuscripts (use /peer-review)
+  - Drafting the user's manuscript (use /write-paper)
+  - Generating reviewer-response prose (use /revise)
+  - Silently fixing non-AI-fixable issues without surfacing them to the user (forbidden)
+inputs:
+  - manuscript/manuscript.md
+outputs:
+  - qc/self_review.md
+  - qc/self_review.json
+  - qc/reference_adequacy.json
+  - qc/perspective_structure.json
+  - qc/refinement_stop.json
+  - qc/baseline_drift.json
+  - qc/refinement_regression.json
+  - qc/review_coverage.json
+deterministic_scripts:
+  - scripts/check_reference_adequacy.py
+  - scripts/check_perspective_structure.py
+  - scripts/check_editorial_impression.py
+  - scripts/check_baseline_drift.py
+  - scripts/check_table_percentages.py
+  - scripts/check_nested_group_comparison.py
+  - scripts/check_reported_p_from_counts.py
+  - scripts/check_test_statistic_p.py
+  - scripts/check_dta_denominators.py
+  - scripts/check_paired_difference_estimator.py
+  - scripts/check_review_coverage.py
+side_effects:
+  - may_edit_manuscript_when_fix_flag_set
+downstream_consumers:
+  - revise
+  - sync-submission
+forbidden_actions:
+  - review_external_manuscripts_as_peer_reviewer
+  - silently_fix_non_ai_fixable_issues
+
+# v2.1 quality card
+purpose: "Pre-submission self-review of the user's own manuscript from a reviewer's perspective across 10 categories, with severity-framed anticipated comments."
+safety_boundaries:
+  - "Reviews the user's own manuscript only; not for reviewing external (journal-assigned) manuscripts."
+  - "Does not silently fix non-AI-fixable issues; it flags them for the author."
+known_limitations:
+  - "Anticipates likely reviewer comments; cannot predict a specific reviewer's focus."
+  - "Advisory; produces recommendations, not manuscript edits."
+validation_commands:
+  - "bash scripts/disclosure_placement_challenge/verify.sh"
+  - "bash scripts/cohort_arith_binding_challenge/verify.sh"
+  - "bash scripts/confounding_findings_challenge/verify.sh"
+  - "python3 scripts/check_reviewer_team_consistency.py"
+  - "python3 scripts/check_domain_probe_sync.py --strict"
+  - "bash tests/test_panel_mode.sh"
+  - "bash tests/test_reference_adequacy.sh"
+  - "bash tests/test_editorial_impression.sh"
+  - "bash tests/test_rounded_delta.sh"
+  - "bash tests/test_figure_citation.sh"
+  - "bash tests/test_emphasis_density.sh"
+  - "bash tests/test_cv_leakage.sh"
+  - "python3 scripts/check_table_percentages.py --manuscript <manuscript.md> --strict  # recompute n (%) cells vs column denominator"
+  - "bash scripts/check_table_percentages_challenge/verify.sh  # deterministic, network-free"
+  - "bash scripts/check_nested_group_comparison_challenge/verify.sh  # subset-vs-parent P-value comparison"
+  - "bash scripts/check_reported_p_from_counts_challenge/verify.sh  # recompute row P from 2x2 counts"
+  - "python3 scripts/check_reported_p_from_counts.py --manuscript manuscript.md --tests p_tests.json --strict  # declared tests: alpha-crossing check"
+  - "bash tests/test_p_tests_declared.sh  # --tests: declared test per row, alpha crossing at printed precision"
+  - "bash scripts/check_test_statistic_p_challenge/verify.sh  # recompute P from t / F / chi2 / z and df"
+  - "bash tests/test_test_statistic_p.sh  # statistic and P rounding intervals, sidedness, declared GRIM"
+  - "bash tests/test_evalues_declared.sh  # --evalues: declared E-values recomputed over printed precision"
+  - "bash scripts/check_dta_denominators_challenge/verify.sh  # sens/spec denominators vs reference-standard counts"
+  - "bash scripts/check_paired_difference_estimator_challenge/verify.sh  # median parity / degenerate CI / unnamed estimator"
+  - "bash scripts/check_effect_stability_challenge/verify.sh  # CI upper/lower ratio > 10x + events-per-variable < 10"
+  - "bash scripts/check_incorporation_bias_challenge/verify.sh  # trajectory reference standard + trajectory predictor"
+  - "bash scripts/check_figure_citation_challenge/verify.sh  # panel-suffixed citation (Figure 3a) regression + real orphan"
+  - "bash scripts/refinement_stop_challenge/verify.sh  # terminal-state loop controller: zero-edit PASS / stop signal from qc/*.json"
+  - "bash scripts/check_baseline_drift_challenge/verify.sh  # framing drift (strength/significance/scope/hedge) vs the last human-approved baseline"
+  - "bash scripts/refinement_regression_challenge/verify.sh  # regression axis: fixed vs broke across runs (ledger); Mirror-Loop churn"
+  - "bash scripts/check_review_coverage_challenge/verify.sh  # coverage ledger: PASS over a not_assessed category / probe is Major; legacy JSON without a ledger is Minor"
+  - "bash tests/test_review_coverage.sh  # coverage-ledger input validation (exit 2 names the field), BOM, legacy --strict"
+  - "bash scripts/check_perspective_structure_challenge/verify.sh  # IMRAD headings + flat abstract in a Perspective (genre-gated, Minor)"
+  - "feed R0-numbered output into /revise"
+evidence_surface: demo

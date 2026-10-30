@@ -1,0 +1,568 @@
+#!/usr/bin/env python3
+"""Generated-code quality gate for analysis scripts (analyze-stats Phase 3.5).
+
+AI-generated analysis code carries a recurring set of reproducibility-hygiene
+"slop" patterns that pass a casual read but break reproducibility or violate
+the data-integrity rules every medsci-skills analysis must follow. This linter
+scans emitted .py / .R scripts before they are reported as final and flags:
+
+  MISSING_SEED            randomness is used (sampling, bootstrap, train/test
+                          split, shuffling, rng) but no seed is set
+                          (np.random.seed / set.seed / random_state= /
+                          default_rng / RandomState, each with a real
+                          argument), or a generator is explicitly initialised
+                          unseeded (default_rng(), RandomState(None),
+                          np.random.seed(), set.seed(NULL)) even when a seed
+                          is set elsewhere. Non-reproducible. Mentions in
+                          comments and (Python) docstrings are ignored. (Major)
+  HARDCODED_DATA_LITERAL  a large hand-typed numeric literal that looks like
+                          tabular data — either alongside a real data-file read,
+                          or very large on its own. The data-integrity rule is
+                          "never hand-type CSV data into scripts; use read_csv +
+                          subset." (Major)
+  HARDCODED_ABS_PATH      an absolute filesystem path literal (/Users/, /home/,
+                          C:\\, ~/Documents). Non-portable and a PII risk. (Major)
+  INPLACE_SOURCE_OVERWRITE the same path is both read as input and written as
+                          output — silently overwriting raw source data. The
+                          data-integrity rule is "never modify raw data." (Major)
+  DEBUG_LEFTOVER          a debugger/print artifact left in (breakpoint(),
+                          pdb.set_trace(), browser(), print("debug"...)) or a
+                          TODO/FIXME/XXX marker. (Flag)
+  UNUSED_IMPORT           (Python only) an imported name never referenced again;
+                          dead dependency. (Flag)
+  API_DEFAULT_STUDENT_T   (Python only) scipy.stats.ttest_ind(...) with no
+                          equal_var argument: scipy's default is the pooled-variance
+                          Student t; the skill's rule is Welch. (Minor: the author
+                          may have meant Student t; only the default is certain.)
+                          Only a call resolved to scipy is checked: a name imported
+                          from scipy.stats, or an attribute of scipy.stats bound by
+                          import (statsmodels' ttest_ind takes usevar, not equal_var).
+  API_DEFAULT_PENALIZED_OR (Python only) sklearn LogisticRegression(...) with none of
+                          penalty, C or l1_ratio, in a file that exponentiates a coef_
+                          or intercept_: the default is L2-penalised at C = 1.0, so
+                          odds ratios taken from it are shrunk. C is accepted as intent
+                          because C=np.inf is how sklearn >= 1.8 turns the penalty off,
+                          and l1_ratio because it is how sklearn >= 1.8 names the
+                          penalty. (Minor: the exponentiated coef_ may belong to
+                          another model.)
+                          Known false clearances: ttest_ind_from_stats, a star import,
+                          scipy.stats reached without an import in the file,
+                          LogisticRegressionCV, pingouin. With scipy older than ~1.11,
+                          a positional equal_var (ttest_ind(a, b, 0, False)) is
+                          reported although it is stated.
+  API_DEFAULTS_NOT_ASSESSED (Python only) the file names ttest_ind or
+                          LogisticRegression but does not parse, so the two API-default
+                          checks could not run. (Minor)
+
+R's t.test() defaults to Welch (var.equal = FALSE), so R calls are not checked.
+
+The gate is conservative on the Major checks (it fires HARDCODED_DATA_LITERAL
+only on genuinely table-shaped literals, MISSING_SEED only when a real
+randomness call is present) so it stays quiet on legitimate analysis code.
+
+INPUTS
+  positional   one or more .py / .R / .r files.
+  --code-dir   directory to scan recursively for .py / .R / .r files.
+  (at least one source must be provided via either form.)
+
+OUTPUT
+  A findings table (stdout) and, with --out, a JSON artifact:
+    {files[], claims[{verdict, severity, file, line, detail}], summary}
+  Exit 1 (with --strict) when any Major claim exists; exit 2 on input error.
+
+Stdlib-only (ast / json / re / argparse / pathlib). Exit codes: 0 clean (or
+report-only), 1 Major claim(s) found (with --strict), 2 input/usage error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import io
+import json
+import re
+import sys
+import tokenize
+from pathlib import Path
+
+# --- shared regexes (language-agnostic unless noted) ------------------------
+
+ABS_PATH = re.compile(r"""['"](?:/Users/|/home/|~/Documents|~/Desktop|~/Downloads|[A-Za-z]:\\\\)[^'"]*['"]""")
+
+DEBUG_PY = re.compile(
+    r"\bbreakpoint\s*\(|\bpdb\.set_trace\s*\(|^\s*import\s+pdb\b|"
+    r"\bprint\s*\(\s*['\"](?:debug|here|test|xxx|todo|checkpoint)\b", re.IGNORECASE)
+DEBUG_R = re.compile(
+    r"\bbrowser\s*\(\s*\)|\bdebug(?:once)?\s*\(|"
+    r"\bprint\s*\(\s*paste0?\s*\(\s*['\"](?:debug|here|test)\b|"
+    r"\bcat\s*\(\s*['\"](?:debug|here)\b", re.IGNORECASE)
+TODO_MARKER = re.compile(r"#\s*(?:TODO|FIXME|XXX)\b", re.IGNORECASE)
+
+# randomness signals vs seed signals
+RAND_PY = re.compile(
+    r"np\.random\.|numpy\.random\.|\brandom\.(?:sample|shuffle|choice|random|randint|randrange)\b|"
+    r"\bRandomState\b|\bdefault_rng\b|\btrain_test_split\b|\bKFold\b|\bStratifiedKFold\b|"
+    r"\bShuffleSplit\b|\bresample\s*\(|\bbootstrap\b|\bpermutation\b")
+# A seed call counts only with a real argument: `default_rng()`, `RandomState()`,
+# `np.random.seed()`, `random.seed(None)` and `random_state=None` all draw fresh OS entropy.
+_PY_SEED_ARG = r"\s*(?![\s)]|None\b)"
+SEED_PY = re.compile(
+    r"(?:np\.random\.seed|numpy\.random\.seed|\brandom\.seed|\bRandomState|\bdefault_rng)"
+    r"\s*\(" + _PY_SEED_ARG + r"|\brandom_state\s*=(?!=)" + _PY_SEED_ARG)
+# ...and an explicitly UNSEEDED generator is non-reproducible even if a seed is set elsewhere:
+# `np.random.seed(42); rng = np.random.default_rng()` draws from `rng` unseeded. (A bare
+# `random_state=None` is not flagged on its own: it is the usual default in a `def` signature.)
+UNSEEDED_PY = re.compile(
+    r"(?:np\.random\.seed|numpy\.random\.seed|\brandom\.seed|\bRandomState|\bdefault_rng)"
+    r"\s*\(\s*(?:None\s*)?\)")
+RAND_R = re.compile(
+    r"\bsample\s*\(|\bsample\.int\s*\(|\brnorm\s*\(|\brunif\s*\(|\brbinom\s*\(|"
+    r"\brpois\s*\(|\bboot\s*\(|\bcreateDataPartition\s*\(")
+SEED_R = re.compile(r"\bset\.seed\s*\(\s*(?![\s)]|NULL\b)")
+UNSEEDED_R = re.compile(r"\bset\.seed\s*\(\s*NULL\s*\)")  # re-initialises from entropy
+
+# data-file reads / writes (for INPLACE_SOURCE_OVERWRITE and the DATA_LITERAL gate)
+READ_CALL = re.compile(
+    r"(?:read_csv|read\.csv|read_excel|read\.xlsx|read_parquet|read_table|read\.table|"
+    r"read_csv2|read_tsv|read_sas|read_stata|read_feather|read_json|loadtxt|genfromtxt)"
+    r"\s*\(\s*([^,\)]+)")
+WRITE_FN = re.compile(
+    r"(?:to_csv|write\.csv|write_csv|write_csv2|to_excel|write\.xlsx|to_parquet|"
+    r"write_parquet|to_feather|savetxt|write\.table|write_tsv|fwrite)\s*\(")
+
+STR_LITERAL = re.compile(r"""['"]([^'"]+)['"]""")
+# bracketed/paren literal whose body is mostly comma-separated numbers
+NUM_LITERAL_BODY = re.compile(r"[\[(]([^\[\]()]*?\d[^\[\]()]*?)[\])]")
+NUM_TOKEN = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
+
+DATA_LITERAL_MIN = 12       # numbers in one literal to look table-shaped (with a read)
+DATA_LITERAL_STANDALONE = 24  # numbers in one literal to flag even with no read
+
+
+def _first_path_literal(arg: str) -> str | None:
+    m = STR_LITERAL.search(arg)
+    return m.group(1) if m else None
+
+
+def strip_comments(src: str) -> str:
+    """Blank out `#`-to-EOL comments while preserving byte offsets and line count,
+    so seed/randomness detection never matches a mention inside a comment (e.g.
+    '# no set.seed() used') yet reported line numbers stay correct. Used for R
+    sources (and as the Python fallback when tokenize fails). Runs only for
+    the seed/randomness checks; path/literal checks keep the full source."""
+    out = []
+    for line in src.split("\n"):
+        i = line.find("#")
+        out.append(line if i < 0 else line[:i] + " " * (len(line) - i))
+    return "\n".join(out)
+
+
+def _blank_spans(src: str, spans: list[tuple[tuple[int, int], tuple[int, int]]]) -> str:
+    """Replace each ((row, col), (end_row, end_col)) span (tokenize coordinates:
+    1-based rows, 0-based character columns) with spaces, keeping newlines, so
+    offsets and line numbers of everything outside the spans are unchanged."""
+    lines = src.split("\n")
+    starts, pos = [], 0
+    for line in lines:
+        starts.append(pos)
+        pos += len(line) + 1
+    chars = list(src)
+    for (r0, c0), (r1, c1) in spans:
+        a, b = starts[r0 - 1] + c0, starts[r1 - 1] + c1
+        for i in range(a, min(b, len(chars))):
+            if chars[i] != "\n":
+                chars[i] = " "
+    return "".join(chars)
+
+
+def strip_py_comments_docstrings(src: str) -> str:
+    """Python: blank comments and docstrings / bare string statements using the
+    tokenize module (not a regex over raw text), so a mention such as
+    '# never call default_rng()' or a docstring explaining 'default_rng() is
+    unseeded' is not read as a call. A `#` inside an ordinary string literal is left
+    alone. Strings used as values (arguments, assignments) are kept. Falls back to
+    the line-based strip_comments() if the source does not tokenize."""
+    spans: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    trivia = {tokenize.NL, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT,
+              tokenize.ENCODING}
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(src).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return strip_comments(src)
+    prev_sig = None  # type of the previous significant token
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        if tok.type == tokenize.COMMENT:
+            spans.append((tok.start, tok.end))
+        elif tok.type == tokenize.STRING and prev_sig in (None, tokenize.NEWLINE):
+            # a run of (implicitly concatenated) string tokens at the start of a
+            # logical line that ends the line is a docstring / bare string statement
+            j = i
+            while j + 1 < len(toks) and toks[j + 1].type in (tokenize.STRING, tokenize.NL):
+                j += 1
+            k = j + 1
+            while k < len(toks) and toks[k].type in (tokenize.COMMENT, tokenize.NL):
+                k += 1
+            if k >= len(toks) or toks[k].type in (tokenize.NEWLINE, tokenize.ENDMARKER):
+                spans.extend((t.start, t.end) for t in toks[i:j + 1]
+                             if t.type == tokenize.STRING)
+        if tok.type not in trivia:
+            prev_sig = tok.type
+        i += 1
+    return _blank_spans(src, spans)
+
+
+def check_text_common(src: str, lang: str) -> list[dict]:
+    claims: list[dict] = []
+    lines = src.splitlines()
+    has_read = bool(READ_CALL.search(src))
+    # comment-free (and, for Python, docstring-free) copy for seed/randomness logic
+    code = strip_py_comments_docstrings(src) if lang == "py" else strip_comments(src)
+
+    # MISSING_SEED
+    rand, seed, unseeded = ((RAND_PY, SEED_PY, UNSEEDED_PY) if lang == "py"
+                            else (RAND_R, SEED_R, UNSEEDED_R))
+    rm = rand.search(code)
+    um = unseeded.search(code)
+    if rm and um:
+        ln = src[:um.start()].count("\n") + 1
+        claims.append({
+            "verdict": "MISSING_SEED", "severity": "Major", "line": ln,
+            "detail": (f"a random generator is initialised WITHOUT a seed "
+                       f"('{um.group(0).strip()[:30]}' draws fresh OS entropy on every run), "
+                       f"so the result is not reproducible even if a seed is set elsewhere; "
+                       f"pass a fixed integer seed"),
+        })
+    elif rm and not seed.search(code):
+        ln = src[:rm.start()].count("\n") + 1
+        claims.append({
+            "verdict": "MISSING_SEED", "severity": "Major", "line": ln,
+            "detail": (f"randomness ('{rm.group(0).strip()[:30]}') is used but no seed is set "
+                       f"({'np.random.seed/random_state=' if lang == 'py' else 'set.seed()'}); "
+                       f"the result is not reproducible"),
+        })
+
+    # HARDCODED_ABS_PATH
+    am = ABS_PATH.search(src)
+    if am:
+        ln = src[:am.start()].count("\n") + 1
+        claims.append({
+            "verdict": "HARDCODED_ABS_PATH", "severity": "Major", "line": ln,
+            "detail": f"absolute path literal {am.group(0)[:50]} — non-portable and a PII risk",
+        })
+
+    # HARDCODED_DATA_LITERAL
+    for m in NUM_LITERAL_BODY.finditer(src):
+        body = m.group(1)
+        # ignore obvious non-data: ranges, single repeated, function-call args with kwargs
+        if "=" in body:  # kwargs like figsize=(8,6) or linspace(0,1,...) — not table data
+            continue
+        # A list/tuple of string literals (e.g. a hex-color palette
+        # ['#000000','#E69F00',...] — exactly the colorblind-safe WONG palette that
+        # make-figures recommends) is NOT hand-typed tabular data. Strip quoted
+        # substrings before counting numeric tokens, so digits living inside string
+        # literals (the "00" in '#E69F00', RGBA codes, category labels) don't make a
+        # string list look table-shaped. Genuine numeric data is unquoted.
+        nums = NUM_TOKEN.findall(STR_LITERAL.sub("", body))
+        if len(nums) >= DATA_LITERAL_STANDALONE or (len(nums) >= DATA_LITERAL_MIN and has_read):
+            ln = src[:m.start()].count("\n") + 1
+            claims.append({
+                "verdict": "HARDCODED_DATA_LITERAL", "severity": "Major", "line": ln,
+                "detail": (f"a hand-typed numeric literal with {len(nums)} values"
+                           + (" alongside a data-file read" if has_read else "")
+                           + "; load tabular data with read_csv()/read.csv() + subset, "
+                             "never hand-type it into the script"),
+            })
+            break  # one report per file is enough to act on
+
+    # INPLACE_SOURCE_OVERWRITE — a write call writing to a path also read as input.
+    # Reads capture the first call argument; writes scan the call window for any
+    # string literal (the output path is often the 2nd arg, e.g. write.csv(df, "x")).
+    reads = {p for a in READ_CALL.findall(src) if (p := _first_path_literal(a))}
+    writes: set[str] = set()
+    for wm in WRITE_FN.finditer(src):
+        window = src[wm.end():wm.end() + 200]
+        window = window.split(")")[0]  # stay within this call's arg list
+        writes.update(STR_LITERAL.findall(window))
+    overlap = reads & writes
+    if overlap:
+        path = sorted(overlap)[0]
+        idx = src.find(path)
+        ln = src[:idx].count("\n") + 1 if idx >= 0 else 0
+        claims.append({
+            "verdict": "INPLACE_SOURCE_OVERWRITE", "severity": "Major", "line": ln,
+            "detail": (f"'{path}' is both read as input and written as output; writing to the "
+                       f"source path overwrites raw data — write derived outputs to a new path"),
+        })
+
+    # DEBUG_LEFTOVER
+    debug_re = DEBUG_PY if lang == "py" else DEBUG_R
+    for i, line in enumerate(lines, 1):
+        if debug_re.search(line) or TODO_MARKER.search(line):
+            claims.append({
+                "verdict": "DEBUG_LEFTOVER", "severity": "Flag", "line": i,
+                "detail": f"debug/marker leftover: {line.strip()[:60]}",
+            })
+            break  # first occurrence per file
+
+    return claims
+
+
+def check_unused_imports_py(src: str) -> list[dict]:
+    """Python-only, AST-based. An imported name never referenced elsewhere."""
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return []  # don't guess on unparseable files
+    imported: list[tuple[str, str, int]] = []  # (bound_name, display, lineno)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = (alias.asname or alias.name).split(".")[0]
+                imported.append((bound, alias.asname or alias.name, node.lineno))
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "__future__":
+                continue
+            for alias in node.names:
+                if alias.name == "*":
+                    return []  # star import: cannot reason about usage
+                bound = alias.asname or alias.name
+                imported.append((bound, f"{node.module or ''}.{alias.name}", node.lineno))
+    # collect all Name usages outside the import statements
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            used.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            pass  # base Name already captured by the Name walk
+    claims = []
+    for bound, display, lineno in imported:
+        if bound not in used:
+            claims.append({
+                "verdict": "UNUSED_IMPORT", "severity": "Flag", "line": lineno,
+                "detail": f"'{display}' is imported but never used; remove the dead import",
+            })
+    return claims
+
+
+# --- API defaults (Python only, Minor) --------------------------------------
+# Each rule restates a rule the skill's own references already give; the message cites it.
+WELCH_RULE = "references/analysis_guides/test_selection.md:78 (Welch's t-test by default)"
+SKLEARN_L2_RULE = ("references/analysis_guides/propensity_score.md:142 (sklearn's "
+                   "LogisticRegression is L2-penalised by default, C = 1.0)")
+API_NAMES = re.compile(r"\bttest_ind\b|\bLogisticRegression\b")
+
+
+def _callee(node: ast.Call) -> str | None:
+    f = node.func
+    if isinstance(f, ast.Name):
+        return f.id
+    if isinstance(f, ast.Attribute):
+        return f.attr
+    return None
+
+
+def _has_kwarg(node: ast.Call, *names: str) -> bool:
+    """True when the call names one of `names` or passes **kwargs (which may set it)."""
+    return any(k.arg is None or k.arg in names for k in node.keywords)
+
+
+def _scipy_ttest_bindings(tree: ast.AST) -> tuple[set, set, set]:
+    """Names bound by import to scipy.stats.ttest_ind, to scipy.stats, and to scipy."""
+    funcs: set = set()
+    mods: set = set()
+    roots: set = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            for a in node.names:
+                if (node.module == "scipy.stats" or node.module.startswith("scipy.stats.")) \
+                        and a.name == "ttest_ind":
+                    funcs.add(a.asname or a.name)
+                elif node.module == "scipy" and a.name == "stats":
+                    mods.add(a.asname or a.name)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "scipy.stats" and a.asname:
+                    mods.add(a.asname)
+                elif a.name == "scipy" or (a.name.startswith("scipy.") and not a.asname):
+                    roots.add(a.asname or "scipy")
+    return funcs, mods, roots
+
+
+def _is_scipy_ttest(node: ast.Call, funcs: set, mods: set, roots: set) -> bool:
+    f = node.func
+    if isinstance(f, ast.Name):
+        return f.id in funcs
+    if not (isinstance(f, ast.Attribute) and f.attr == "ttest_ind"):
+        return False
+    v = f.value
+    if isinstance(v, ast.Name):
+        return v.id in mods
+    return (isinstance(v, ast.Attribute) and v.attr == "stats"
+            and isinstance(v.value, ast.Name) and v.value.id in roots)
+
+
+def _exponentiates_coef(node: ast.Call) -> bool:
+    if _callee(node) != "exp":
+        return False
+    return any(isinstance(n, ast.Attribute) and n.attr in ("coef_", "intercept_")
+               for a in node.args for n in ast.walk(a))
+
+
+def check_api_defaults_py(src: str) -> list[dict]:
+    """scipy ttest_ind without equal_var; LogisticRegression without penalty/C/l1_ratio next to exp(coef_)."""
+    if not API_NAMES.search(src):
+        return []
+    try:
+        tree = ast.parse(src)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        m = API_NAMES.search(src)
+        return [{
+            "verdict": "API_DEFAULTS_NOT_ASSESSED", "severity": "Minor",
+            "line": src[:m.start()].count("\n") + 1,
+            "detail": (f"'{m.group(0)}' appears but the file does not parse as Python, so its "
+                       f"API defaults (equal_var, penalty) were not checked"),
+        }]
+    alias = {"LogisticRegression": "LogisticRegression"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.name == "LogisticRegression" and a.asname:
+                    alias[a.asname] = a.name
+    funcs, mods, roots = _scipy_ttest_bindings(tree)
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    # Only exp(...coef_/intercept_...) is taken as evidence of odds ratios: a name such as
+    # "odds_ratio" may hold ORs from another model (e.g. statsmodels Logit).
+    computes_or = any(_exponentiates_coef(n) for n in calls)
+    claims: list[dict] = []
+    t_calls = [n for n in calls if _is_scipy_ttest(n, funcs, mods, roots)
+               and not _has_kwarg(n, "equal_var")]
+    if t_calls:
+        n = min(t_calls, key=lambda c: (c.lineno, c.col_offset))
+        claims.append({
+            "verdict": "API_DEFAULT_STUDENT_T", "severity": "Minor", "line": n.lineno,
+            "detail": (f"ttest_ind() without equal_var runs scipy's default pooled-variance "
+                       f"Student t ({len(t_calls)} call(s)); the skill's rule is Welch, "
+                       f"{WELCH_RULE}: pass equal_var=False, or equal_var=True with the reason"),
+        })
+    lr_calls = [n for n in calls if alias.get(_callee(n) or "") == "LogisticRegression"
+                and not n.args and not _has_kwarg(n, "penalty", "C", "l1_ratio")]
+    if lr_calls and computes_or:
+        n = min(lr_calls, key=lambda c: (c.lineno, c.col_offset))
+        claims.append({
+            "verdict": "API_DEFAULT_PENALIZED_OR", "severity": "Minor", "line": n.lineno,
+            "detail": ("LogisticRegression() with none of penalty, C or l1_ratio is fitted "
+                       "with an L2 penalty at C = 1.0, and this file exponentiates a coef_; "
+                       "odds ratios taken from this model are shrunk towards 1; "
+                       + SKLEARN_L2_RULE + ". For odds ratios fit an unpenalised model "
+                       "(statsmodels Logit, or C=np.inf), or state the penalty"),
+        })
+    return claims
+
+
+def check_file(path: Path) -> list[dict]:
+    lang = "py" if path.suffix.lower() == ".py" else "r"
+    src = path.read_text(encoding="utf-8", errors="replace")
+    claims = check_text_common(src, lang)
+    if lang == "py":
+        claims += check_unused_imports_py(src)
+        claims += check_api_defaults_py(src)
+    for c in claims:
+        c["file"] = str(path)
+    return claims
+
+
+def gather_files(positional: list[str], code_dir: str | None) -> list[Path]:
+    files: list[Path] = []
+    for p in positional:
+        pp = Path(p)
+        if not pp.is_file():
+            sys.stderr.write(f"ERROR: not a file: {p}\n")
+            sys.exit(2)
+        files.append(pp)
+    if code_dir:
+        d = Path(code_dir)
+        if not d.is_dir():
+            sys.stderr.write(f"ERROR: not a directory: {code_dir}\n")
+            sys.exit(2)
+        for ext in ("*.py", "*.R", "*.r"):
+            files.extend(sorted(d.rglob(ext)))
+    # dedupe, preserve order
+    seen, uniq = set(), []
+    for f in files:
+        key = str(f.resolve())
+        if key not in seen:
+            seen.add(key)
+            uniq.append(f)
+    if not uniq:
+        sys.stderr.write("ERROR: no .py/.R source files to scan\n")
+        sys.exit(2)
+    return uniq
+
+
+def analyze(positional: list[str], code_dir: str | None) -> dict:
+    files = gather_files(positional, code_dir)
+    claims: list[dict] = []
+    for f in files:
+        claims += check_file(f)
+    n_major = sum(1 for c in claims if c["severity"] == "Major")
+    return {
+        "files": [str(f) for f in files],
+        "claims": claims,
+        "summary": {
+            "n_files": len(files),
+            "n_claims": len(claims),
+            "n_major": n_major,
+            "n_flag": len(claims) - n_major,
+            "verdict": "MAJOR_CANDIDATE" if n_major else "OK",
+        },
+    }
+
+
+def render(result: dict) -> str:
+    lines = ["| File:Line | Check | Severity | Detail |", "|---|---|---|---|"]
+    for c in result["claims"]:
+        loc = f"{Path(c['file']).name}:{c.get('line', 0)}"
+        lines.append(f"| {loc} | {c['verdict']} | {c['severity']} | {c['detail']} |")
+    if len(lines) == 2:
+        lines.append("| (none) | — | — | scripts are reproducibility-clean |")
+    return "\n".join(lines)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Generated-code quality gate (analyze-stats Phase 3.5).")
+    ap.add_argument("files", nargs="*", help=".py / .R source files to scan")
+    ap.add_argument("--code-dir", help="directory to scan recursively for .py/.R files")
+    ap.add_argument("--out", help="write JSON artifact to this path")
+    ap.add_argument("--strict", action="store_true", help="exit 1 if any Major claim exists")
+    ap.add_argument("--quiet", action="store_true", help="suppress stdout table")
+    args = ap.parse_args()
+
+    result = analyze(args.files, args.code_dir)
+
+    if not args.quiet:
+        print("=" * 41)
+        print(" Generated-Code Quality (Phase 3.5)")
+        print("=" * 41)
+        print(render(result))
+        print()
+        s = result["summary"]
+        if s["n_major"]:
+            print(f"MAJOR candidate: {s['n_major']} reproducibility/integrity issue(s) "
+                  f"across {s['n_files']} file(s).")
+        else:
+            print(f"OK: {s['n_files']} file(s) reproducibility-clean "
+                  f"({s['n_flag']} minor flag(s)).")
+
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(json.dumps({"detector": "check_generated_code", **result}, indent=2), encoding="utf-8")
+        if not args.quiet:
+            print(f"\nwrote {args.out}")
+
+    return 1 if (args.strict and result["summary"]["n_major"]) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

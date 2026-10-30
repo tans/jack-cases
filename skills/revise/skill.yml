@@ -1,0 +1,51 @@
+schema_version: 2
+name: revise
+layer: B
+owner_domain: reviewer_response
+maturity: official
+when_to_use:
+  - User received reviewer comments and needs a structured response-to-reviewers letter
+  - Coordinating new analyses or figures triggered by reviewer requests (delegates to /analyze-stats, /make-figures)
+  - Drafting a cover letter for a revision (R1 / R2 / minor / major)
+  - Tracking R0→R1 manuscript changes with revision-introduced number `[VERIFY-CSV]` tags
+when_NOT_to_use:
+  - Pre-submission self-criticism (use /self-review)
+  - Drafting an original manuscript (use /write-paper)
+  - Editing tone or AI patterns only (use /humanize)
+  - Arguing valid reviewer points as rebuttal without user approval (forbidden)
+inputs:
+  - reviewer_comments
+  - manuscript/manuscript.md
+outputs:
+  - revision/response_to_reviewers.md
+  - revision/change_log.md
+  - qc/response_claims.json
+deterministic_scripts:
+  - scripts/check_response_claims.py
+side_effects:
+  - may_edit_manuscript_with_user_approved_changes
+downstream_consumers:
+  - sync-submission
+  - verify-refs
+forbidden_actions:
+  - argue_valid_reviewer_points_as_rebuttal_without_approval
+  - reference_original_page_lines_after_revision
+
+# v2.1 quality card
+purpose: "Parse reviewer comments and generate a structured Response to Reviewers with tracked manuscript changes and an editor cover letter."
+safety_boundaries:
+  - "Valid reviewer points are not argued away as rebuttal without user approval."
+  - "Does not reference original page/line numbers after the manuscript has been revised."
+known_limitations:
+  - "Coordinates new analyses/figures via other skills but does not itself produce statistics."
+  - "No standalone demo; depends on the actual reviewer comments supplied."
+  - "check_response_claims verifies only anchored claims (quoted added text, added citations); paraphrased edits are not machine-verifiable and are not flagged."
+validation_commands:
+  - "confirm every reviewer comment maps to a point-by-point response"
+  - "/verify-refs --strict on new citations"
+  - "python3 scripts/check_response_claims.py --response revision/response_to_reviewers.md --manuscript manuscript/manuscript.md --strict"
+  - "python3 scripts/check_response_claims.py --response revision/response_to_reviewers.md --manuscript manuscript/manuscript.md --values revision_values.json --strict  # also check declared revision values"
+  - "bash tests/test_response_claims.sh"
+  - "python3 scripts/check_density_complaint.py --comments revision/decision_letter.md --previous manuscript/manuscript_R0.md --revised manuscript/manuscript.md --strict"
+  - "bash scripts/density_complaint_challenge/verify.sh"
+evidence_surface: bundled_script

@@ -1,0 +1,211 @@
+{
+  "title": "虾壳医疗科研助手",
+  "intro": "面向医院科研团队、医学院、CRO、药企医学部门和医疗器械企业，预装 22 项医疗科研与图像处理技能。产品以 Codex 作为智能分析与代码执行能力，不在本地运行大模型，适合 16GB 内存的轻量主机部署。",
+  "sections": [
+    { "id": "s1", "title": "数据安全与项目管理" },
+    { "id": "s2", "title": "研究设计与伦理方案" },
+    { "id": "s3", "title": "医学统计与科研制图" },
+    { "id": "s4", "title": "论文质量控制与返修" },
+    { "id": "s5", "title": "医疗科研图像处理" }
+  ],
+  "skills": [
+    {
+      "slug": "deidentify",
+      "title": "临床数据脱敏",
+      "section": "s1",
+      "summary": "识别和处理临床科研数据中的敏感信息，包括姓名、电话号码、证件号码、病案号、地址和日期等。支持假名化、日期平移、映射文件生成和多国家/地区规则，可在数据分析前完成本地脱敏预处理。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/deidentify"
+    },
+    {
+      "slug": "clean-data",
+      "title": "医疗数据清洗",
+      "section": "s1",
+      "summary": "分析 CSV、Excel 等研究数据中的缺失值、异常值、重复记录、字段类型错误和编码不一致问题。系统先生成数据质量报告，再根据用户确认生成相应的数据清洗代码，避免未经确认直接修改原始数据。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/clean-data"
+    },
+    {
+      "slug": "intake-project",
+      "title": "科研项目梳理",
+      "section": "s1",
+      "summary": "读取已有研究资料，梳理研究目标、研究类型、当前进度、已有数据、缺失材料和主要风险。适用于科研项目启动、团队交接、历史课题整理以及研究计划评估。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/intake-project"
+    },
+    {
+      "slug": "render-pdf-doc",
+      "title": "科研文档 PDF 输出",
+      "section": "s1",
+      "summary": "将 Markdown 格式的科研方案、内部报告、伦理附件和说明文档转换为规范 PDF。支持中英文文档、表格和中日韩字体回退，适用于研究方案、科研汇报和培训材料输出。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/render-pdf-doc"
+    },
+    {
+      "slug": "design-study",
+      "title": "研究设计检查",
+      "section": "s2",
+      "summary": "检查研究对象、分析单位、入排标准、对照设计、偏倚风险、数据泄漏、验证方式和报告规范适配情况。适用于观察性研究、诊断试验、预测模型、真实世界研究和医疗人工智能研究。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/design-study"
+    },
+    {
+      "slug": "calc-sample-size",
+      "title": "样本量与统计效能计算",
+      "section": "s2",
+      "summary": "根据研究类型辅助选择样本量计算方法，支持诊断准确性、两组比较、方差分析、卡方检验、Logistic 回归、Cox 回归、生存分析、ICC、Kappa 和非劣效设计等。输出计算参数、样本量依据、敏感性分析建议以及可复现的 Python 或 R 代码。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/calc-sample-size"
+    },
+    {
+      "slug": "write-protocol",
+      "title": "研究方案生成",
+      "section": "s2",
+      "summary": "根据研究问题、研究类型、主要终点、样本量和统计分析计划，辅助生成科研或伦理审查方案草稿。可生成研究背景、研究设计、样本量依据、统计计划以及需要机构人员补充的内容清单。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/write-protocol"
+    },
+    {
+      "slug": "fill-protocol",
+      "title": "伦理与科研模板填写",
+      "section": "s2",
+      "summary": "将研究方案内容填写到医院、学校或科研机构提供的 Word 模板中。适用于伦理申请表、科研立项书、课题申报书等结构化文档，并尽量保留原模板的表格、字体、段落和页面布局。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/fill-protocol"
+    },
+    {
+      "slug": "analyze-stats",
+      "title": "医学统计分析",
+      "section": "s3",
+      "summary": "根据研究设计和本地数据生成可复现的 Python 或 R 统计分析代码。支持描述统计、诊断准确性、线性回归、Logistic 回归、生存分析、倾向评分、重复测量和常见临床研究统计方法。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/analyze-stats"
+    },
+    {
+      "slug": "make-figures",
+      "title": "医学科研图表",
+      "section": "s3",
+      "summary": "根据分析结果生成适合医学论文、科研汇报和项目总结的图表。支持 ROC 曲线、森林图、Kaplan–Meier 曲线、混淆矩阵、Bland–Altman 图、研究流程图和可视化摘要等。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/make-figures"
+    },
+    {
+      "slug": "check-reporting",
+      "title": "医学论文报告规范检查",
+      "section": "s4",
+      "summary": "根据研究类型检查论文是否符合相应报告规范。支持 STROBE、CONSORT、PRISMA、STARD、TRIPOD、CARE、CLAIM、ARRIVE 等常用医学研究报告标准，并输出缺失项目和修改建议。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/check-reporting"
+    },
+    {
+      "slug": "self-review",
+      "title": "投稿前论文自审",
+      "section": "s4",
+      "summary": "以医学期刊审稿人的视角检查研究设计、统计方法、结果表达、图表一致性、论文结构和研究局限。输出重大问题、一般问题、建议修改项以及投稿前质量检查结果。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/self-review"
+    },
+    {
+      "slug": "polish-language",
+      "title": "医学英语润色",
+      "section": "s4",
+      "summary": "检查医学论文中的英文表达、缩写定义、英美拼写、P 值格式、数字范围、单位间距和连字符等问题。在不改变实验数据、统计结果、参考文献和科学结论的前提下，提高论文语言的准确性和一致性。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/polish-language"
+    },
+    {
+      "slug": "revise",
+      "title": "审稿意见回复",
+      "section": "s4",
+      "summary": "读取编辑决定函和审稿意见，将问题分类为重大修改、一般修改和需要解释或反驳的问题。辅助生成逐条回复、修改说明、修改位置和回复信草稿。",
+      "source": "medsci-skills",
+      "homepage": "https://github.com/Aperivue/medsci-skills",
+      "url": "https://github.com/Aperivue/medsci-skills/tree/main/skills/revise"
+    },
+    {
+      "slug": "image-processing",
+      "title": "科研图片批量处理",
+      "section": "s5",
+      "summary": "对 PNG、JPEG、TIFF、BMP 等图片进行批量裁剪、缩放、旋转、压缩和格式转换。适用于实验图片整理、投稿图片尺寸统一、文件格式转换和图片元数据处理。",
+      "source": "medical-research-skills",
+      "homepage": "https://github.com/aipoch/medical-research-skills",
+      "url": "https://github.com/aipoch/medical-research-skills/tree/main/scientific-skills/Other/image-processing"
+    },
+    {
+      "slug": "image-ocr",
+      "title": "医疗图片文字识别",
+      "section": "s5",
+      "summary": "使用本地 Tesseract OCR 从 PNG、JPEG、TIFF、BMP 等图片中提取文字。适用于扫描件、检验单截图、设备界面截图、实验图片标签和论文图片文字识别，支持中文和英文等语言模型。",
+      "source": "medical-research-skills",
+      "homepage": "https://github.com/aipoch/medical-research-skills",
+      "url": "https://github.com/aipoch/medical-research-skills/tree/main/scientific-skills/Other/image-ocr"
+    },
+    {
+      "slug": "dicom-anonymizer",
+      "title": "DICOM 医学影像脱敏",
+      "section": "s5",
+      "summary": "识别并删除或替换 DICOM 文件中的患者姓名、患者编号、出生日期、机构信息和其他敏感标签。适用于 CT、MRI、DR、超声等医学影像科研数据导出和匿名化处理，并可生成脱敏记录。",
+      "source": "medical-research-skills",
+      "homepage": "https://github.com/aipoch/medical-research-skills",
+      "url": "https://github.com/aipoch/medical-research-skills/tree/main/scientific-skills/Other/dicom-anonymizer"
+    },
+    {
+      "slug": "literatureimages-interpretation",
+      "title": "医学论文图表解读",
+      "section": "s5",
+      "summary": "对用户提供的医学论文图片和科研图表进行结构化解读。支持森林图、ROC 曲线、Kaplan–Meier 曲线、热图、火山图、箱线图、柱状图和多面板实验图片等常见形式。输出内容包括图表类型、横纵坐标、分组信息、主要趋势、统计标记、可支持的结论和需要人工核验的部分。",
+      "source": "medical-research-skills",
+      "homepage": "https://github.com/aipoch/medical-research-skills",
+      "url": "https://github.com/aipoch/medical-research-skills/tree/main/scientific-skills/Other/literatureimages-interpretation"
+    },
+    {
+      "slug": "microscopy-scale-bar-adder",
+      "title": "显微图片比例尺",
+      "section": "s5",
+      "summary": "根据用户提供的显微镜标定参数，为显微图片添加规范比例尺。适用于光学显微镜、荧光显微镜、组织切片和电镜图片，可配置比例尺长度、位置、字体和输出分辨率。",
+      "source": "medical-research-skills",
+      "homepage": "https://github.com/aipoch/medical-research-skills",
+      "url": "https://github.com/aipoch/medical-research-skills/tree/main/scientific-skills/Other/microscopy-scale-bar-adder"
+    },
+    {
+      "slug": "multi-panel-figure-assembler",
+      "title": "科研多面板图片拼接",
+      "section": "s5",
+      "summary": "将多张实验图片或统计图拼接为统一的 A、B、C、D 等论文组合图。支持自动排列、面板标签、边距调整、尺寸统一以及高分辨率 PNG、TIFF 等格式输出。",
+      "source": "medical-research-skills",
+      "homepage": "https://github.com/aipoch/medical-research-skills",
+      "url": "https://github.com/aipoch/medical-research-skills/tree/main/scientific-skills/Other/multi-panel-figure-assembler"
+    },
+    {
+      "slug": "dpi-upscaler-checker",
+      "title": "投稿图片分辨率检查",
+      "section": "s5",
+      "summary": "检查科研图片的像素尺寸、物理尺寸、DPI、色彩模式和投稿适用性。可批量生成图片质量报告，并指出分辨率不足、尺寸不合适或格式不符合常见期刊要求的图片。",
+      "source": "medical-research-skills",
+      "homepage": "https://github.com/aipoch/medical-research-skills",
+      "url": "https://github.com/aipoch/medical-research-skills/tree/main/scientific-skills/Other/dpi-upscaler-checker"
+    },
+    {
+      "slug": "result-figure-consistencycheck",
+      "title": "论文结果与图表一致性检查",
+      "section": "s5",
+      "summary": "检查论文正文、统计结果、表格、图题和科研图片之间是否存在不一致。可发现样本量差异、分组错误、颜色与图例冲突、P 值不一致、单位错误、图号引用错误和正文趋势与图中趋势不符等问题。",
+      "source": "medical-research-skills",
+      "homepage": "https://github.com/aipoch/medical-research-skills",
+      "url": "https://github.com/aipoch/medical-research-skills/tree/main/scientific-skills/Other/result-figure-consistencycheck"
+    }
+  ]
+}

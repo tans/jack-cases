@@ -1,0 +1,137 @@
+<!-- Domain probe module — shared, vendored BYTE-IDENTICAL by /peer-review and /self-review.
+     Severity words below (MAJOR / MINOR / major / minor) denote finding severity, NOT a journal
+     recommendation. Each consuming skill maps findings to its own output:
+       - peer-review: Major / Minor comments + Confidential Comments to the Editor; a task- or
+         design-level flaw is placed as Major #1.
+       - self-review: Anticipated Major / Minor Comments (Fatal / Fixable) mapped to category letters.
+     Do NOT edit one copy only — run `python3 scripts/check_domain_probe_sync.py --sync`. -->
+
+# Systematic Review / Meta-Analysis probes (P0–P19)
+
+Internal-consistency-first gate (P0) plus a 19-probe checklist (P1–P19). These probes complement (do not replace) the generic Phase 2 issue checklist.
+
+**P0 — Internal-consistency-first gate (run before P1; gates any fabrication claim)**:
+- Before alleging fabrication on a manuscript that "feels AI-generated", reproduce the headline pooled statistics, paired study counts (k), and subgroup counts directly from the extracted data table (or supplement included-studies table).
+- If paired k, pooled medians, and subgroup counts reproduce, fabrication is unlikely — **pivot the review to table-vs-source fidelity (P1), comparator definition (P1), and eligibility**, not to a fabrication framing.
+- Only if the table cannot be reproduced, or is internally inconsistent, escalate to a transparency/integrity MAJOR.
+- Rationale: an "AI-smelling" surface is not evidence of fabrication. Real references can be present and the arithmetic coherent while the substantive flaws are extraction, comparator, eligibility, and overclaiming.
+
+**P1 — Performance-MA value + comparator-existence probe**:
+- For method-comparison MAs reporting accuracy / DSC / AUC / F1 (model-vs-model, AI-vs-reader, two training paradigms) and for DTA MAs reporting sensitivity / specificity, select ≥2 outlier or headline-driving studies.
+- (a) Verify each sampled arm value against the source paper (PubMed abstract or full text). For DTA cells, check for **sens/spec swap** (source sens=A% / spec=B% appearing in the forest as sens=B% / spec=A%).
+- (b) **Comparator-existence check**: verify the comparator arm is consistently defined and actually exists in each source. A baseline mislabeled as the comparator inflates the headline (e.g., a limited single-source baseline reported as a "centralised" comparator when the source paper has no centralised arm).
+- (c) Per-study schema: `Exists | Correct citation | Eligible (domain-specific) | Same comparator (same task/dataset) | Value matches source | Author-derived/averaged | Verdict`.
+- (d) Severity ladder: `<1pp rounding or author-derived average = minor`; `wrong dataset/task/comparator or not domain-specific = major`; `unfindable or wrong-citation = integrity concern (verify against source); potentially major`.
+- If a confirmed error drives a reported subgroup p-value or a headline claim, register as a primary major finding.
+
+**P2 — Cohort / benchmark non-independence probe**:
+- Identify clusters in included studies sharing: (a) institution name, (b) author surname + year proximity, (c) public ICU/EHR database (MIMIC-IV, eICU, MIMIC-III, KNHIS, UK Biobank, Optum, MarketScan, IBM), (d) **public imaging-challenge benchmark** (BraTS, FeTS, TCIA, Kaggle) reused across multiple included studies.
+- For each cluster, fetch PubMed efetch affiliation + abstract Methods database/benchmark source.
+- Flag pairs sharing the same data source + overlapping enrollment period (or the same public benchmark) as "high-confidence non-independence".
+- Manuscript should acknowledge in Limitations + perform a leave-one-dataset-out sensitivity analysis and add a data-provenance column to Table 1. If absent → MAJOR.
+- **Nuance**: map provenance and *request* the provenance column + sensitivity analysis; do NOT assert that a specific study used a given benchmark from coarse supplement labels alone (e.g., a supplement labeling a study only as "Hospital" or "Public" does not confirm BraTS/FeTS use). Confirm against the source before stating it.
+
+**P3 — Diagnostic subset N transparency (mixed DTA + prognostic MA)**:
+- Compute bivariate pool denominator (TP+FP+TN+FN) from Table 2 or forest plot.
+- Compare to total N reported in Abstract.
+- If diagnostic subset is <50% of total without explicit "diagnostic subset N = X / Y" in Results → MAJOR transparency gap.
+
+**P4 — k=1 subgroup flag**:
+- Inspect subgroup analyses for strata with k=1 (single included study).
+- If a reported subgroup p-value is driven by k=1 stratum → flag MAJOR.
+- Recommend reframing as exploratory or removing from formal subgroup test.
+
+**P5 — Supplementary completeness check**:
+- SR-MA supplementary must contain at minimum:
+  - PRISMA / PRISMA-DTA checklist with page refs
+  - Full-text exclusion list with reasons (per PRISMA 2020 item 16b)
+  - Per-study data extraction table
+  - Per-study × per-domain risk-of-bias table (QUADAS-2 / QUADAS-AI / PROBAST / PROBAST-AI)
+  - Full search strategy verbatim per database
+- If supplementary contains only figure captions or is missing 3+ of these → MAJOR.
+
+**P6 — PROSPERO ID format + live URL request**:
+- Standard PROSPERO format: `CRD42` + 9 digits = 14 chars total (e.g. `CRD42024500001`).
+- IDs that are not 14 chars or have a non-numeric tail → FORMAT_ANOMALY (MAJOR).
+- Always request authors provide live registration URL in cover letter for protocol cross-check.
+
+**P7 — Reference duplicate detection** (extends `/verify-refs`):
+- Run `/verify-refs` (PubMed + CrossRef). In addition to standard checks, detect duplicate PMID or DOI within reference list.
+- Verbatim duplicates indicate LLM-assisted reference compilation error → MAJOR (cite renumbering required).
+
+**P8 — AI Disclosure presence**:
+- `grep -iE "chatgpt|gpt-|llm|generative ai|ai was used|ai-assisted|copilot|claude|gemini|chatbot|large language model"` on manuscript body.
+- If 0 matches AND journal requires AI Disclosure (RYAI / Radiology / RSNA family / Lancet family / JAMA family / most BMJ family / Nature family) → flag MINOR-to-MAJOR.
+
+**P9 — Non-significant finding promoted to Abstract (overclaim probe)**:
+- Flag any exploratory or non-significant result (a crossover, a trend, a post-hoc subgroup) that appears in the Abstract or Key Points framed as a finding.
+- Sub-check: does the promoted finding depend on a study flagged or mis-extracted under P1? (A headline crossover can collapse once a mis-extracted comparator is corrected.)
+- Flag "non-inferiority" / "equivalence" asserted without a pre-specified margin. A margin cannot be pre-specified retrospectively — ask the authors to document any pre-existing protocol margin, otherwise drop the non-inferiority language or present it explicitly as a post hoc equivalence / sensitivity analysis.
+
+**P10 — Citation-metadata confusion class (over-escalation guard)**:
+- DOI-suffix digits that surface as an apparent article number (e.g., a DOI tail "77196" against article number 26068, or "60466-1" against 6274) are cosmetic metadata confusion, **not** fabrication — do not escalate them as fabricated references.
+- Reference-list duplicates are handled by `/verify-refs` (`duplicate_findings[]`); AI-disclosure presence is the cross-cutting P8 check. Neither is unique to SR/MA.
+
+**P11 — Poolability / construct-validity gate (does this synthesis hold at all?)**:
+- Before refining cell-level extraction (P0/P1), ask the higher-altitude question the forensic layer skips: are the pooled studies answering the *same clinical question* on *comparable populations / index tests / reference standards*, such that combining them into one estimate is meaningful?
+- Check that the quality / risk-of-bias instrument is valid for the included *study/model class* (e.g., a radiomics-specific QA tool applied to deep-learning studies; METRICS vs CLAIM / PROBAST mismatch). An instrument applied outside its intended class invalidates the RoB synthesis.
+- When k is small and P2 non-independence reduces the independent-cohort count further (e.g., k=6 → k≈4 after overlap), quantitative pooling itself may be inappropriate → a systematic review with **descriptive synthesis** is the correct form, not a forced meta-analytic pool (and not merely a sensitivity analysis layered on top).
+- This is an **unfixable-in-current-form** defect when present: cell-level re-extraction cannot rescue a synthesis that should not have been pooled. Let it dominate the severity tier over fixable extraction/reporting defects — strong cell-level forensics must not set a lenient tier when the synthesis itself is invalid.
+
+**P12 — Risk-of-bias table row-sum ↔ figure-matrix reconciliation**:
+- For every per-study risk-of-bias row (NOS ★/☆, JBI Y/N, QUADAS-2/PROBAST domain grid), the count of awarded items must equal the row's stated total (NOS: ★ count == "N/9"; JBI: Y count == the "Yes" column). A row whose cells do not sum to its printed total is a visible internal contradiction — especially in a traffic-light **figure**, where a reader sees, e.g., seven filled cells next to a "6/9" label.
+- Cross-check the **figure-generating data matrix** (the R/Python script that draws the traffic-light) against the **supplementary RoB table** cell-by-cell. A transcription drift between the two surfaces as a figure-vs-table mismatch even when each row's printed total looks fine.
+- The single source of truth is the **primary reviewer assessment form** (the filled extraction/appraisal sheet), not a value hardcoded in a plotting script. When they disagree, regenerate the figure from the assessment form and re-derive the table; then re-sync the table, caption, and any prose sentence that names per-item losses.
+- Severity: a row-sum vs total mismatch (or figure vs table mismatch) in a submitted artifact is MAJOR (it reads as a data-handling error). Motivating case: an NOS figure drew one study with seven stars but labeled it 6/9 because the plotting script's comparability cell contradicted the primary appraisal form.
+
+**P13 — Included-study ↔ reference-list completeness**:
+- In an SR/MA, **every study in the characteristics table (Table 1) must be cited as a numbered reference.** A manuscript that lists included studies only as "First-author Year" labels in Table 1, while the reference list holds only methodology/guideline citations, will draw an "included studies not cited" reviewer flag.
+- Deterministic check: the set of Table-1 included-study labels (First-author + Year) must be a subset of the reference-list first-authors. Flag any included study with no matching reference.
+- Place the citations as a cluster at the point the pool is first introduced ("N studies were included [c1; c2; … cN]") so a numeric CSL renumbers them in order of appearance; citations placed only inside a separately-built table file are not processed by the manuscript's citeproc pass.
+- Do not source included-study citations from hand-kept extraction notes / appraisal sheets — those carry journal and page errors. Resolve each via PubMed `efetch` (authoritative), disambiguating same-author/year papers by **technique + sample size** (e.g., a study reporting "249 tumors, 110 adjacent to the diaphragm" is identified by the n that matches the synthesis, not by a remembered journal name). Take the article DOI only from `PubmedData/ArticleIdList`, not from an ArticleId inside the article's own reference list.
+
+**P14 — Small-k DTA/proportion MA enrollment-overlap → effective independent k**:
+- Extends P2 (non-independence) for the small-k case where double-counting changes the verdict, not just the precision. Group included studies by first-author / center / source database, then pull each study's **enrollment / recruitment window** from the source and compare overlapping groups.
+- When same-group studies share patients, recompute the **effective independent k** (e.g., k=8 reported → k≈5 once two same-center windows overlap). Ask explicitly whether quantitative pooling is still defensible at the reduced k, or whether a descriptive synthesis is the honest form (cross-link P11).
+- A panel that flags overlap as "possible / fixable in revision" without recomputing effective k under-rates a desk-fatal flaw. Severity: MAJOR when the reduced k undermines the pooled estimate; escalate toward unfixable-in-current-form when pooling itself becomes inappropriate.
+
+**P15 — Mixed analysis-unit denominator pooled into one proportion**:
+- For a single-arm proportion MA (technical success, complication rate, pneumothorax, etc.), the contributing studies must share a denominator **unit**. Pooling per-patient, per-session, and per-lesion denominators into one proportion makes the estimand undefined.
+- Deterministic lead: read the extraction denominator-unit column (or compare each study's reported N vs N_patients / N_sessions / N_lesions). Flag any outcome whose contributing studies mix units.
+- Recommend denominator-coherent subset pools as the primary analysis (e.g., per-patient pool primary; per-session as a separate, labeled pool), not one blended proportion. Severity: MAJOR (estimand undefined).
+
+**P16 — "Prospectively registered" vs registration-after-search chronology**:
+- When the manuscript or cover letter calls the review "prospectively registered" (PROSPERO/OSF), cross-check the **registration date** against the **search execution / cutoff date**. A search cutoff that predates registration is not retrospective by itself (PROSPERO places the ideal point before screening), but it makes the claim depend on when screening began.
+- Lead: if `prospectiv*` co-occurs with the registry name AND (search date < registration date) → find when screening began; flag when screening or extraction predates the initial submission, or when the manuscript gives no way to tell. Recommend either correcting the chronology claim or reframing as "screening and extraction followed registration" (only the steps that genuinely post-date registration may be called prospective).
+- Scope: the claim is copied, so check every copy: abstract, Methods, cover letter, and any portal paste text for ethics or registration fields. A portal field rarely carries dates; compare it against the registry record. Use the registry's initial submission date, not the later date the record was published. When the review's own files are available, also compare that date against the earliest screening or extraction file (AI first-pass drafts included): registration after either has begun is retrospective, not merely late.
+- Severity: MINOR–MAJOR depending on how load-bearing the "prospective" framing is. Every PROSPERO SR/MA cover letter is a candidate.
+
+**P17 — Boundary-degenerate proportion pooled with spurious precision**:
+- When a pooled proportion (technical success, sensitivity, specificity) has **a majority of studies at the 0% or 100% boundary** (e.g., 5 of 6 studies at 100%), a GLMM / random-effects pool is near-degenerate: I²=0 is a boundary artifact, and a pooled point estimate with a tight CI (e.g., 99.5%, CI 69–100) reads as authoritative precision the data do not support.
+- Lead: count studies at the 0%/100% boundary per outcome; if ≥ (k−1) are at the boundary, flag the pooled point-estimate/CI as spurious precision.
+- Recommend a descriptive tally ("5 of 6 studies reported 100%; the sixth reported X%") rather than a pooled estimate. Severity: MAJOR when the boundary pool is presented as a headline accuracy/success figure.
+
+**P18 — Train-vs-validation pool integrity: apparent estimate smuggled into the "validation" pool**:
+- A DTA / prognostic-model MA that separates a "training" pool from a "validation" pool must build the validation pool from **held-out / external / cross-validated** estimates only. The failure mode: for studies without cross-validation, the authors drop each study's **apparent (in-sample / resubstitution)** sensitivity–specificity (or "overall estimate") INTO the validation pool — so the headline "validation" performance is partly the same in-sample numbers, and the "train ≈ validation stability" the Discussion leans on is mechanical reuse.
+- Lead: grep Methods for a train/validation split co-occurring with {`overall estimate`, `non–cross-validated` / `non-cross-validated`, `apparent`, `resubstitution`, `where validation was unavailable … used the overall`}. Then check whether a **sensitivity analysis excluding non-CV studies materially moves the validation pool** (a large drop = the primary "validation" estimate is optimism-contaminated).
+- Severity: MAJOR #1 when the headline rests on it (estimand incoherence — the "validation" pool is not a validation estimate); often unfixable in the current form (recompute restricted to genuinely held-out estimates, or relabel as apparent). See `~/.claude/rules/dta-meta-analysis.md`.
+
+**P19 — Reviewer-side included-study cell audit: metric-type, self-eligibility contradiction, CI provenance**:
+- As a reviewer, a **random/convenience sample of the open-access included studies** cell-checked against source is sufficient to demonstrate a systematic extraction-error class — full re-extraction is NOT the reviewer's job. A sampled error rate above ~30% ⇒ the pooled estimates are untrustworthy without author-side full cell reconciliation (P1 / `dta-meta-analysis.md` §1).
+- Beyond value-matches-source (P1), check three extraction pathologies: **(a) metric-type identity** — an `accuracy` or a *different task's* AUC tabulated AS the target AUC (accuracy ↔ AUC ↔ sens/spec are not interchangeable); **(b) self-eligibility contradiction** — an extracted metric/design that violates the review's OWN stated inclusion rule (e.g. an accuracy-only study the eligibility text excludes, entered anyway); **(c) CI provenance** — a CI present in the MA table that **does not exist in the source** ("derived from the point estimate and sample size" is not a valid route to an AUC CI).
+- Also flag validation-type / analysis-unit mislabels (5-fold CV recorded as train/validation; N scans counted as N patients). Absence of a per-study 2×2 / sens–spec table is itself a PRISMA-DTA reporting MAJOR.
+- Lead: sample K OA included studies; per study confirm metric TYPE + value + that the extracted design satisfies the paper's own eligibility + that any tabled CI appears in the source. Severity scales with the sampled error rate.
+
+**Output template (P1 cell-swap example)**:
+> "I spot-checked [Author Year] (PMID [...]) against the source paper and found that the values in Figure X are swapped. The source paper reports external-test sensitivity A% / specificity B% (n=N); the manuscript forest entries place [num1/denom1] in the sensitivity slot (which is the source's specificity numerator/denominator) and [num2/denom2] in the specificity slot (which is the source's sensitivity)."
+
+**Output template (P1 comparator-existence example)**:
+> "I spot-checked [Author Year] (PMID [...]) against the source. The manuscript lists this study's comparator ('[label]', [value]) in [comparison], but the source paper does not report that arm; the [value] appears to be the study's [limited single-source baseline]. Because this entry contributes to [the pooled comparison / a headline claim], I'd suggest re-extracting the comparator definition per study and adding a comparator-definition column to Table 1 so readers can confirm each arm is the same task on the same data."
+
+**Output template (P2 example)**:
+> "[Author1 Year1] uses [Database] (N=...). [Author2 Year2] uses [Database] (N=...). These are nearly certainly overlapping patient pools, and the statistical independence assumption for MA pooling is violated. I'd suggest a sensitivity analysis excluding one of the two studies, plus an explicit cohort-source column in Table 1."
+
+**Discipline — leads vs findings (applies to every P0–P10 probe)**:
+- Output from a forensic sub-agent or automated scan is a **lead, never a finding, until confirmed against the source.** Concrete failure modes to discard on inspection: treating recent (in-press / current-year) publication dates as "impossible", inventing journal article-number rules, and inflated all-or-nothing fabrication-risk scores.
+- Before finalizing, run an **overclaim sweep of your own draft** (mandatory external-QC pass — independent model or colleague). Two worked examples: a strong claim that "the references are real, not fabricated" should be narrowed to "the sampled references / DOIs resolved"; a benchmark example list should be trimmed to studies whose benchmark use was source-confirmed.
+- **Do not compute chance-probabilities** for suspicious or identical values. Record the observation neutrally: "exact match to ≥2 decimals; source verification pending."

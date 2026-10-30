@@ -1,0 +1,56 @@
+schema_version: 2
+name: make-figures
+version: 1.1.0
+layer: B
+owner_domain: figure_generation
+maturity: official
+when_to_use:
+  - User requests a figure, plot, diagram, or visual abstract for a medical research manuscript
+  - Triggered by /write-paper Phase 5 (figure generation step)
+  - Following /analyze-stats output that requires visualization
+  - Generating PRISMA / CONSORT / STARD / STROBE flow diagrams
+  - Producing journal-specific visual or graphical abstracts
+when_NOT_to_use:
+  - Self-contained tabular results (use /analyze-stats markdown output)
+  - Decorative slides for talks (use /present-paper)
+  - Logos, branding, or non-research illustrations (out of scope)
+  - AI-generated images for journals that prohibit them (JACC family, NEJM) — see Journal AI-Image Policies in SKILL.md
+inputs:
+  - analysis/_analysis_outputs.md
+  - analysis/tables/*.csv
+outputs:
+  - analysis/figures/_figure_manifest.md
+  - analysis/figures/*.png
+  - analysis/figures/*.pdf
+deterministic_scripts:
+  - scripts/generate_flow_diagram.R
+  - scripts/critic_figure.py
+  - scripts/generate_visual_abstract.py
+  - scripts/validate_pptx_mac_compat.py
+side_effects:
+  - writes_figure_artifacts
+  - reads_medical_illustration_assets_from_servier_or_bioart
+downstream_consumers:
+  - write-paper
+  - sync-submission
+  - present-paper
+forbidden_actions:
+  - fabricate_figure_numbers
+  - create_flow_diagrams_without_source_counts
+  - generate_AI_images_for_prohibited_targets
+
+# v2.1 quality card
+purpose: "Generate publication-ready figures and visual/graphical abstracts (ROC, forest, CONSORT/STARD/PRISMA flow, KM, Bland-Altman, etc.)."
+safety_boundaries:
+  - "Figure numbers are not fabricated; flow diagrams are built from real source counts."
+  - "Honors journal AI-image policies; no AI images for prohibited targets."
+known_limitations:
+  - "Figure correctness depends on correct input data/counts supplied by upstream skills."
+  - "PPTX visual abstracts need the Mac-compatibility check before sharing."
+validation_commands:
+  - "Rscript scripts/generate_flow_diagram.R"
+  - "python3 scripts/validate_pptx_mac_compat.py <file>"
+  - "python3 tests/test_pptx_mac_compat.py"
+  - "bash scripts/render_core_figures_challenge/verify.sh"
+  - "bash scripts/export_portal_tiff_challenge/verify.sh"
+evidence_surface: demo

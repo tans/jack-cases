@@ -1,0 +1,141 @@
+# Regression Analysis Guide
+
+Covers both logistic regression (binary outcome) and multiple linear regression (continuous outcome).
+
+---
+
+## Logistic Regression
+
+### When to Use
+Binary outcome variable (0/1, event/no event) with one or more predictors.
+Used for risk factor identification and prediction model building.
+
+### Assumptions
+1. Binary outcome
+2. Linear relationship between continuous predictors and log-odds (Box-Tidwell test)
+3. Independent observations (if repeated → GEE or mixed logistic). When rows are clustered within
+   subjects (multiple lesions/visits per patient), use cluster-robust standard errors
+   (`cov_type="cluster"`, `cov_kwds={"groups": id}` in statsmodels) or a mixed-effects logistic
+   model — a naive logit CI assumes independent rows and is too narrow
+4. Collinearity inspected (VIF computed **with an intercept** in the design matrix — without one,
+   any predictor with a non-zero mean looks collinear)
+5. Sufficient sample: EPV >= 10 (minimum), >= 20 (recommended), counting **parameters** (a
+   k-level categorical predictor uses k-1) and the rarer outcome class. For a prediction model,
+   justify N with the Riley et al. criteria (`pmsampsize`), not EPV alone
+
+### Variable Selection
+Do **not** select covariates by univariable P value (e.g. "P < 0.10 in univariable analysis").
+Screening drops confounders whose marginal association is masked and makes prediction models
+optimistic (Sun, Shook & Kay 1996, doi:10.1016/0895-4356(96)00025-X; Heinze, Wallisch & Dunkler
+2018, doi:10.1002/bimj.201700067).
+- **Etiologic (effect of one exposure)**: covariates prespecified from a DAG / subject-matter
+  knowledge (confounders; not mediators or colliders) — see "Covariate Selection" in
+  `SKILL.md`.
+- **Prediction**: prespecified candidate predictors, penalisation or shrinkage where the sample
+  is limited, and no univariable filter; any data-driven selection is repeated inside the
+  bootstrap so the optimism correction covers it.
+- Crude (univariable) ORs may be tabled beside adjusted ORs as description, not as a selection
+  step.
+- STROBE/TRIPOD guideline compliance required
+
+### Model Assessment
+
+**Calibration:**
+- Calibration intercept + slope (bootstrap optimism-corrected) + flexible calibration plot —
+  **not** Hosmer–Lemeshow, which is deprecated; see `calibration.md`
+
+**Discrimination:**
+- C-statistic (= AUC): 0.7-0.8 acceptable, 0.8-0.9 excellent, > 0.9 outstanding
+
+**Multicollinearity:**
+- VIF > 5 → inspect. Collinearity among **adjustment covariates** does not bias the exposure
+  estimate, so do not drop a confounder on VIF alone (O'Brien 2007,
+  doi:10.1007/s11135-006-9018-6). If the **exposure** itself is collinear, its CI widens — report
+  it, and consider whether the two variables measure the same construct. For a multi-level
+  categorical term use the generalised VIF (GVIF); its dummy columns are collinear by design.
+
+### Required Outputs
+1. OR table: univariable AND multivariable OR (95% CI), P-value per variable
+2. C-statistic with 95% CI — labelled **apparent**, plus the bootstrap optimism-corrected value
+   (`regression.py` prints both)
+3. Calibration: intercept + slope + flexible calibration plot (`calibration.md`)
+4. VIF table (supplementary)
+5. Box-Tidwell results for continuous predictors (supplementary)
+6. Forest plot of adjusted ORs
+
+### OR Table Format
+| Variable | Univariable OR (95% CI) | P | Multivariable OR (95% CI) | P |
+|----------|------------------------|---|--------------------------|---|
+| Age (per 10 yr) | 1.45 (1.12-1.88) | 0.005 | 1.32 (1.01-1.73) | 0.042 |
+
+### Reporting Template
+"Multivariable logistic regression was used to estimate the association of [exposure] with [outcome], adjusted for [covariates], which were prespecified from [a directed acyclic graph / prior literature]. The apparent C-statistic was [X.XXX] (95% CI [X.XXX-X.XXX]); after bootstrap optimism correction ([B] resamples) it was [X.XXX], with a calibration slope of [X.XX]. [Exposure] was associated with [outcome] (adjusted OR [X.XX], 95% CI [X.XX-X.XX]; P = [exact])."
+
+Fill every bracket from the script output. Words such as "good discrimination" or "adequate
+calibration" are a judgement the numbers must support; do not write them by default.
+
+### Pitfalls
+- OR != RR: when event rate > 10%, OR overestimates RR
+- EPV < 10 → overfitting risk. Consider penalized regression (LASSO/Ridge)
+- Specify reference category for categorical variables
+- Specify units for continuous variables (per 1 year vs per 10 years)
+- Complete separation → use Firth's penalized likelihood
+
+---
+
+## Multiple Linear Regression
+
+### When to Use
+Continuous outcome variable with one or more predictors.
+Used for identifying determinants and estimating adjusted effects.
+
+### Assumptions (LINE + No Multicollinearity)
+1. **L**inearity: residuals vs fitted plot
+2. **I**ndependence: no repeated measures (if repeated → LMM/GEE)
+3. **N**ormality of residuals: Q-Q plot (a normality test is not used to choose the model; with
+   n > ~30 per parameter, coefficient CIs are robust to non-normal residuals)
+4. **E**qual variance (homoscedasticity): residuals vs fitted, Scale-Location plot
+5. Collinearity inspected: VIF (with intercept)
+6. No influential outliers: Cook's distance < 4/n
+
+### Assumption Violations → Alternatives
+| Violation | Fix |
+|-----------|-----|
+| Non-linearity | Log transform, polynomial terms, GAM |
+| Heteroscedasticity | Robust SE, WLS |
+| Non-normal residuals | Transform outcome, bootstrap CI |
+| Multicollinearity | Inspect; combine variables measuring one construct, or Ridge; do not drop a confounder on VIF alone |
+
+### Model Evaluation
+- R² (coefficient of determination): proportion of variance explained
+- Adjusted R²: penalized for number of predictors — use for model comparison
+- In medical research, R² = 0.2-0.4 can be meaningful (high biological variability)
+
+### Diagnostic Plots (4-panel, always generate)
+1. Residuals vs Fitted → linearity + homoscedasticity
+2. Q-Q plot → residual normality
+3. Scale-Location → homoscedasticity
+4. Residuals vs Leverage → influential outliers (Cook's distance)
+
+### Required Outputs
+1. Coefficient table: β (95% CI), P-value per variable
+2. R² and adjusted R²
+3. VIF table
+4. 4-panel diagnostic plot
+5. Standardized coefficients (optional, for effect size comparison)
+
+### Coefficient Table Format
+| Variable | β (95% CI) | P |
+|----------|-----------|---|
+| Age (per year) | 0.45 (0.32 to 0.58) | < 0.001 |
+| Model R² | 0.35 | |
+| Adjusted R² | 0.33 | |
+
+### Reporting Template
+"Multiple linear regression was performed with [outcome] as the dependent variable. The model explained [X]% of the variance (adjusted R² = [0.XX]). After adjusting for [covariates], [variable] had a coefficient of [X.XX] (95% CI [X.XX to X.XX]; P = [exact]). Model assumptions were assessed with residual diagnostic plots ([state what they showed])."
+
+### Pitfalls
+- Always report β units (per 1 year, per 10 kg/m², etc.)
+- Standardized β useful for comparing effect sizes but unstandardized is standard in papers
+- EPV for continuous outcome: N >= 10-20 per predictor
+- Always present diagnostic plots (at minimum in supplementary)

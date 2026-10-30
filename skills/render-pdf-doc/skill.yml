@@ -1,0 +1,62 @@
+schema_version: 2
+name: render-pdf-doc
+layer: A
+owner_domain: document_layout
+maturity: official
+when_to_use:
+  - Render a non-bibliography Korean/English academic markdown to publication-quality PDF
+  - Research proposals, IRB cover letters, briefing handouts, anchor docs, reference tables
+  - Auto-infer pipe-table column widths for content-proportional layout
+  - CJK-font-aware PDF on macOS (Apple SD Gothic Neo) or Linux (Noto Sans CJK KR)
+when_NOT_to_use:
+  - Manuscripts with bibliography (use /manage-refs scripts/render_pandoc.sh — owns CSL pipeline)
+  - Filling institutional Word form templates (use /fill-protocol)
+  - Figures, plots, or PPTX (use /make-figures or /present-paper)
+  - Hand-typing CSV data into tables (forbidden — see numerical-safety rule)
+inputs:
+  - markdown_file (non-bibliography academic doc — proposal, briefing, anchor doc, IRB cover, reference table)
+  - frontmatter (optional; mainfont, CJKmainfont, geometry, fontsize, linestretch)
+outputs:
+  - pdf_file (default: same dir, same stem, .pdf)
+  - intermediate.colwidths.md (optional, when --infer-colwidths is run as separate step)
+deterministic_scripts:
+  - scripts/render_pdf.sh
+  - scripts/infer_colwidths.py
+  - scripts/check_deps.sh
+side_effects:
+  - writes_pdf_artifacts
+  - reads_os_font_table  # for CJK font detection (Apple SD Gothic Neo / Noto Sans CJK KR)
+downstream_consumers:
+  - intake-project
+  - manage-project
+  - write-protocol  # when no institutional .docx form exists; see fill-protocol for the form-fill alternative
+forbidden_actions:
+  - bibliography_rendering  # delegate /manage-refs scripts/render_pandoc.sh
+  - citation_key_modification
+  - institutional_word_form_filling  # delegate /fill-protocol
+  - figure_or_pptx_generation  # delegate /make-figures or /present-paper
+  - hand_typing_csv_data_into_tables
+provenance:
+  origin: "P3 spinoff from /write-paper Phase 7.6 split (2026-05-01)"
+  precedent: "an education-research calibration anchor PDF — manual fix x2 → skill"
+quality_gates:
+  - check_deps.sh: hard exit if pandoc + xelatex + CJK-font dependencies are not installed
+  - infer_colwidths.py: content-proportional dashes (tune with --min / --scale)
+  - circulation_redaction: "for circulation PDFs, keep change history / version numbers / PI attribution out of the body (a separate circulation file or the supplement)"
+
+# v2.1 quality card
+purpose: "Render a Markdown manuscript to a styled DOCX/PDF (tables, column widths, dependencies checked)."
+safety_boundaries:
+  - "Delegates bibliography rendering to manage-refs and figures/PPTX to make-figures/present-paper; does not modify citation keys."
+  - "Does not hand-type CSV data into tables (numerical-safety)."
+known_limitations:
+  - "Output fidelity depends on installed render dependencies (checked by check_deps.sh)."
+  - "Glyph scans cover selected risky classes in one font face; final PDF rendering requires visual verification."
+  - "Institutional Word forms are out of scope (use fill-protocol)."
+validation_commands:
+  - "bash scripts/check_deps.sh"
+  - "bash scripts/render_pdf.sh -i <manuscript.md>"
+  - "bash tests/test_glyph_coverage.sh"
+  - "python3 tests/test_font_faces.py"
+  - "python3 tests/test_render_pdf.py"
+evidence_surface: bundled_script

@@ -1,0 +1,372 @@
+"""
+survival_analysis.py — Publication-ready Survival Analysis
+===========================================================
+Kaplan-Meier curves, log-rank test, Cox proportional hazards model.
+
+Input CSV columns:
+    time        : float — Time to event or censoring (in days/months/years)
+    event       : int   — Event indicator (1 = event occurred, 0 = censored)
+    group       : str   — Group variable for KM comparison (optional)
+    [covariates]: float/int — Covariates for Cox model
+
+Outputs:
+    - KM plot with at-risk table (PNG/PDF, 300 DPI)
+    - Cox model results table (CSV)
+    - Console: complete results summary
+
+Usage:
+    python survival_analysis.py --input data.csv \
+        --time time_months --event event \
+        --group treatment_group \
+        --covariates age sex bmi comorbidity \
+        --time-unit "Months" \
+        --output survival_analysis
+
+Dependencies:
+    pip install lifelines pandas numpy matplotlib scipy
+"""
+
+import argparse
+import sys
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+
+try:
+    from lifelines import KaplanMeierFitter, CoxPHFitter
+    from lifelines.statistics import logrank_test, multivariate_logrank_test
+    from lifelines.utils import restricted_mean_survival_time, median_survival_times
+    LIFELINES_AVAILABLE = True
+except ImportError:
+    LIFELINES_AVAILABLE = False
+    print("ERROR: lifelines not installed. Install with: pip install lifelines")
+    sys.exit(1)
+
+# ── Reproducibility ───────────────────────────────────────────────────────────
+SCRIPT_VERSION = "1.0.0"
+SEED = 42
+np.random.seed(SEED)
+
+
+def _fmt_time(x):
+    """Format a survival time; 'NR' (not reached) for inf/NaN."""
+    if x is None or not np.isfinite(x):
+        return "NR"
+    return f"{x:.1f}"
+
+
+def median_with_ci(kmf, unit):
+    """Median survival with its 95% CI from a fitted KaplanMeierFitter.
+
+    A median point estimate reported without its CI is incomplete (analyze-stats
+    Survival reporting rule). Returns 'NR' when the median is not reached.
+    """
+    med = kmf.median_survival_time_
+    try:
+        ci = median_survival_times(kmf.confidence_interval_)
+        lo, hi = ci.iloc[0, 0], ci.iloc[0, 1]
+    except Exception:
+        lo = hi = float("nan")
+    return f"{_fmt_time(med)} (95% CI {_fmt_time(lo)}–{_fmt_time(hi)}) {unit}"
+print(f"survival_analysis.py v{SCRIPT_VERSION} | {datetime.now().strftime('%Y-%m-%d')}")
+
+# ── Style ─────────────────────────────────────────────────────────────────────
+plt.rcParams.update({
+    "font.family": "Arial",
+    "font.size": 9,
+    "axes.labelsize": 9,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+})
+
+WONG_COLORS = ["#0072B2", "#D55E00", "#009E73", "#E69F00", "#CC79A7", "#56B4E9"]
+LINE_STYLES = ["-", "--", "-.", ":", (0, (3, 1, 1, 1))]
+
+
+def load_data(filepath, time_col, event_col):
+    df = pd.read_csv(filepath)
+    for col in [time_col, event_col]:
+        if col not in df.columns:
+            raise ValueError(f"Column '{col}' not found in {filepath}")
+    df = df.dropna(subset=[time_col, event_col])
+    return df
+
+
+def km_analysis(df, time_col, event_col, group_col=None,
+                time_unit="Months", output_path="survival"):
+    """Kaplan-Meier analysis with at-risk table."""
+    fig = plt.figure(figsize=(7.0, 5.0))
+
+    if group_col and group_col in df.columns:
+        groups = sorted(df[group_col].dropna().unique())
+        n_groups = len(groups)
+        gs = gridspec.GridSpec(2, 1, height_ratios=[3.5, 1.5], hspace=0.05)
+    else:
+        groups = None
+        n_groups = 1
+        gs = gridspec.GridSpec(2, 1, height_ratios=[3.5, 1.5], hspace=0.05)
+
+    ax_km = fig.add_subplot(gs[0])
+    ax_risk = fig.add_subplot(gs[1])
+
+    fitters = {}
+
+    if groups:
+        for i, g in enumerate(groups):
+            mask = df[group_col] == g
+            d = df[mask]
+            kmf = KaplanMeierFitter()
+            kmf.fit(d[time_col], d[event_col], label=str(g))
+            fitters[g] = kmf
+
+            kmf.plot_survival_function(
+                ax=ax_km,
+                color=WONG_COLORS[i % len(WONG_COLORS)],
+                linestyle=LINE_STYLES[i % len(LINE_STYLES)],
+                linewidth=1.5,
+                ci_show=True,
+                ci_alpha=0.15,
+            )
+
+            # Median survival with 95% CI
+            print(f"  {g}: Median survival = {median_with_ci(kmf, time_unit)}")
+
+        # Log-rank test
+        if n_groups == 2:
+            g1, g2 = groups
+            lr = logrank_test(
+                df.loc[df[group_col] == g1, time_col],
+                df.loc[df[group_col] == g2, time_col],
+                df.loc[df[group_col] == g1, event_col],
+                df.loc[df[group_col] == g2, event_col],
+            )
+            p_str = f"P {'< .001' if lr.p_value < 0.001 else f'= {lr.p_value:.3f}'}"
+            ax_km.text(0.98, 0.5, f"Log-rank {p_str}",
+                       transform=ax_km.transAxes, fontsize=8,
+                       va="center", ha="right")
+            print(f"\n  Log-rank test: χ² = {lr.test_statistic:.3f}, P = {lr.p_value:.4f}")
+        else:
+            mlr = multivariate_logrank_test(
+                df[time_col], df[group_col], df[event_col]
+            )
+            p_str = f"P {'< .001' if mlr.p_value < 0.001 else f'= {mlr.p_value:.3f}'}"
+            ax_km.text(0.98, 0.5, f"Log-rank {p_str}",
+                       transform=ax_km.transAxes, fontsize=8,
+                       va="center", ha="right")
+    else:
+        # Single-group KM
+        kmf = KaplanMeierFitter()
+        kmf.fit(df[time_col], df[event_col], label="All patients")
+        fitters["All"] = kmf
+        kmf.plot_survival_function(ax=ax_km, color=WONG_COLORS[0],
+                                    linewidth=1.5, ci_show=True, ci_alpha=0.2)
+        print(f"  Median survival: {median_with_ci(kmf, time_unit)}")
+
+    # KM axis formatting
+    ax_km.set_ylim(-0.02, 1.05)
+    ax_km.set_xlim(left=0)
+    ax_km.set_ylabel("Survival probability", fontsize=9)
+    ax_km.set_xlabel("")
+    ax_km.spines[["top", "right"]].set_visible(False)
+    ax_km.legend(fontsize=8, frameon=False)
+    ax_km.grid(axis="y", color="#EEEEEE", linewidth=0.5)
+
+    # At-risk table
+    ax_risk.set_axis_off()
+    time_points = np.linspace(0, df[time_col].max() * 0.95, 6)
+    row_offset = 1.0
+
+    for i, (label, kmf) in enumerate(fitters.items()):
+        # Number at risk at t = subjects whose time is >= t. (The event table's
+        # at_risk column is the risk set at the previous event time, which
+        # overstates it by everyone who left between that time and t.)
+        at_risk = [int((np.asarray(kmf.durations) >= t).sum()) for t in time_points]
+        ax_risk.text(-0.01, row_offset - i * 0.35, str(label),
+                     transform=ax_risk.transAxes, fontsize=7.5,
+                     va="top", ha="right",
+                     color=WONG_COLORS[i % len(WONG_COLORS)])
+        for j, (t, n) in enumerate(zip(time_points, at_risk)):
+            ax_risk.text(j / (len(time_points) - 1), row_offset - i * 0.35,
+                          str(int(n)), transform=ax_risk.transAxes,
+                          fontsize=7.5, va="top", ha="center")
+
+    ax_km.set_xticks(time_points)
+    ax_km.set_xlabel(time_unit, fontsize=9)
+
+    plt.suptitle("Kaplan-Meier Survival Curves", fontsize=10, y=1.01, fontweight="bold")
+    plt.tight_layout()
+
+    for ext in ["pdf", "png"]:
+        outfile = f"{output_path}_km.{ext}"
+        dpi = 300 if ext == "png" else None
+        plt.savefig(outfile, dpi=dpi, bbox_inches="tight",
+                    facecolor="white", edgecolor="none")
+        print(f"Saved: {outfile}")
+    plt.close()
+
+
+def cox_analysis(df, time_col, event_col, covariates, output_path="survival",
+                 cluster_col=None, penalizer=0.0):
+    """Cox proportional hazards model.
+
+    cluster_col: id column for nested observation units (e.g. multiple lesions /
+    eyes / repeated episodes per subject). When set, lifelines computes a robust
+    (cluster-sandwich) variance so the HR CIs reflect within-subject correlation
+    rather than treating correlated rows as independent.
+
+    penalizer: 0 (default) is the standard partial-likelihood MLE. A positive
+    value is a ridge penalty that shrinks every HR toward 1 -- an explicit
+    opt-in for sparse data, and its output is labelled as penalised.
+    """
+    keep = [time_col, event_col] + covariates + ([cluster_col] if cluster_col else [])
+    model_df = df[keep].dropna()
+    print(f"\n── Cox PH Model (N = {len(model_df)}) ───────────────────────")
+
+    # Events-per-variable (EPV) gate — mirror of the logistic EPV rule. A Wald CI
+    # from a sparse-event model is not stable.
+    n_events = int(model_df[event_col].sum())
+    epv = n_events / max(len(covariates), 1)
+    print(f"EPV = {epv:.1f} ({n_events} events / {len(covariates)} covariates; "
+          f"minimum recommended: 10)")
+    if epv < 10:
+        print("⚠ WARNING: EPV < 10 — Cox estimates may be unstable. Reduce the "
+              "covariates, or fit a Firth-penalised Cox with profile-likelihood CIs "
+              "(R coxphf); interpret Wald CIs with caution.")
+
+    if penalizer > 0:
+        print(f"⚠ PENALISED Cox fit (ridge, penalizer = {penalizer}): every HR is "
+              "shrunk toward 1 and the CIs are not those of the unpenalised "
+              "estimand. Report it as a penalised (shrunk) estimate.")
+    cph = CoxPHFitter(penalizer=penalizer)
+    fit_kw = {"duration_col": time_col, "event_col": event_col}
+    if cluster_col:
+        fit_kw["cluster_col"] = cluster_col  # robust (cluster-sandwich) SE
+        print(f"Robust cluster-sandwich SE on '{cluster_col}' (nested units).")
+    cph.fit(model_df, **fit_kw)
+    cph.print_summary()
+
+    # Check PH assumption
+    print("\n── Proportional Hazards Assumption (Schoenfeld residuals) ───")
+    try:
+        cph.check_assumptions(model_df, p_value_threshold=0.05, show_plots=False)
+    except Exception as e:
+        print(f"  PH assumption check: {e}")
+
+    # Save results table
+    summary = cph.summary.copy()
+    summary.columns = [c.replace(" ", "_") for c in summary.columns]
+    summary["penalizer"] = penalizer
+    outfile = f"{output_path}_cox_results.csv"
+    summary.to_csv(outfile)
+    print(f"\nSaved: {outfile}")
+
+    # Concordance index
+    print(f"\nConcordance index (C-statistic): {cph.concordance_index_:.3f}")
+
+    return cph
+
+
+def rmst_with_se(time, event, tau):
+    """KM-based RMST up to tau and the SE of the ESTIMATOR.
+
+    Var = sum over event times t_j <= tau of A_j^2 * d_j / (n_j (n_j - d_j)),
+    A_j = area under the KM curve from t_j to tau (Klein & Moeschberger 2003;
+    the se(rmean) of R survival::survfit). lifelines'
+    restricted_mean_survival_time(return_variance=True) returns the variance of
+    min(T, tau) in the population instead, which is not a standard error.
+    """
+    t = np.asarray(time, dtype=float); e = np.asarray(event).astype(int)
+    ut = np.unique(t[(e == 1) & (t <= tau)])
+    n_j = np.array([(t >= u).sum() for u in ut])
+    d_j = np.array([((t == u) & (e == 1)).sum() for u in ut])
+    S = np.cumprod(1 - d_j / n_j)
+    knots = np.concatenate([[0.0], ut, [tau]])
+    s_step = np.concatenate([[1.0], S])          # S on [knots[k], knots[k+1])
+    widths = np.diff(knots)
+    rmst = float(np.sum(s_step * widths))
+    tail = np.cumsum((s_step * widths)[::-1])[::-1]   # area from knots[k] to tau
+    A = tail[1:len(ut) + 1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        terms = np.where(n_j > d_j, A ** 2 * d_j / (n_j * (n_j - d_j)), 0.0)
+    return rmst, float(np.sqrt(terms.sum()))
+
+
+def rmst_analysis(df, time_col, event_col, group_col, t_star, output_path="survival"):
+    """Restricted Mean Survival Time per group and, for two groups, the
+    difference with its 95% CI (independent groups)."""
+    if group_col not in df.columns:
+        return
+
+    groups = sorted(df[group_col].dropna().unique(), key=str)
+    print(f"\n── Restricted Mean Survival Time (t* = {t_star}) ────────────")
+    est = {}
+    for g in groups:
+        d = df[df[group_col] == g]
+        rmst, se = rmst_with_se(d[time_col], d[event_col], t_star)
+        est[g] = (rmst, se)
+        print(f"  {g}: RMST = {rmst:.2f} (95% CI {rmst - 1.96 * se:.2f}–"
+              f"{rmst + 1.96 * se:.2f})")
+    if len(groups) == 2:
+        (r0, s0), (r1, s1) = est[groups[0]], est[groups[1]]
+        diff, se = r1 - r0, np.sqrt(s0 ** 2 + s1 ** 2)
+        from scipy.stats import norm
+        p = 2 * norm.sf(abs(diff / se))
+        print(f"  RMST difference ({groups[1]} − {groups[0]}) = {diff:.2f} "
+              f"(95% CI {diff - 1.96 * se:.2f} to {diff + 1.96 * se:.2f}), P = {p:.3f}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Survival analysis")
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--time", required=True, help="Time column name")
+    parser.add_argument("--event", required=True, help="Event column name (1=event, 0=censored)")
+    parser.add_argument("--group", default=None)
+    parser.add_argument("--covariates", nargs="+", default=None)
+    parser.add_argument("--cluster", default=None,
+                        help="ID column for nested units → robust cluster SE in Cox")
+    parser.add_argument("--penalizer", type=float, default=0.0,
+                        help="Ridge penalty for the Cox fit (default 0 = unpenalised MLE); "
+                             "a positive value shrinks HRs and is reported as penalised")
+    parser.add_argument("--time-unit", default="Months")
+    parser.add_argument("--rmst-t", type=float, default=None,
+                        help="t* for RMST (in same units as time)")
+    parser.add_argument("--output", default="survival_analysis")
+
+    args = parser.parse_args()
+
+    df = load_data(args.input, args.time, args.event)
+    print(f"\nN = {len(df)} | Events: {df[args.event].sum()} "
+          f"({df[args.event].mean()*100:.1f}%)")
+
+    print("\n── Kaplan-Meier Analysis ────────────────────")
+    km_analysis(df, args.time, args.event, args.group,
+                args.time_unit, args.output)
+
+    if args.covariates:
+        cox_analysis(df, args.time, args.event, args.covariates, args.output,
+                     cluster_col=args.cluster, penalizer=args.penalizer)
+
+    if args.rmst_t and args.group:
+        rmst_analysis(df, args.time, args.event, args.group,
+                      args.rmst_t, args.output)
+
+    print(f"\n── Session Info ─────────────────────────────")
+    print(f"Python: {sys.version.split()[0]}")
+    for pkg in ["lifelines", "pandas", "numpy", "scipy"]:
+        try:
+            import importlib
+            m = importlib.import_module(pkg)
+            print(f"  {pkg}: {m.__version__}")
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 1:
+        print("Usage: python survival_analysis.py --input data.csv "
+              "--time time_months --event event --group treatment")
+    else:
+        main()

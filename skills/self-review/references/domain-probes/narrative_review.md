@@ -1,0 +1,68 @@
+<!-- Domain probe module — shared, vendored BYTE-IDENTICAL by /peer-review and /self-review.
+     Severity words below (MAJOR / MINOR / major / minor) denote finding severity, NOT a journal
+     recommendation. Each consuming skill maps findings to its own output:
+       - peer-review: Major / Minor comments + Confidential Comments to the Editor; a task- or
+         design-level flaw is placed as Major #1.
+       - self-review: Anticipated Major / Minor Comments (Fatal / Fixable) mapped to category letters.
+     Do NOT edit one copy only — run `python3 scripts/check_domain_probe_sync.py --sync`. -->
+
+# Narrative / Review-Article probes (RV1–RV9)
+
+A 9-probe checklist for a Review / narrative review / primer / state-of-the-art / educational review — i.e., a non-systematic synthesis rather than original research. Supporting appraisal material (the SANRA appraisal items, a consolidated evaluation checklist, and a candidate-additions catalog for AI/LLM-in-radiology reviews) is maintained separately by the peer-review skill and is not required to apply RV1–RV9 below.
+
+The original-research probes (the generic Phase 2 issue checklist, and the SR-MA / Survival / Radiomics probes) do not transfer to review articles. The key inversion: for original research, reviewers are discouraged from scope-expanding requests, but **for narrative reviews, identifying thematic gaps and proportionately suggesting missing content is an expected part of the reviewer's role** — error-spotting alone is necessary but not sufficient. Keep SANRA in its lane: it is a 6-item *critical appraisal tool, not a reporting guideline*, so do not over-enforce it (only RV3 is SANRA-aligned, and as a suggestion; do not demand PRISMA — narrative ≠ systematic).
+
+**RV1 — Novelty & value-add** *(editorial value-add axis)*: Against ≥2–3 recent reviews/primers on the same topic, does the manuscript state explicitly what it adds? For saturated topics, if the authors do not position their contribution against the current review literature, the incremental value is hard to judge — MAJOR candidate. Judge contribution magnitude only; scope-fit is the editor's call.
+
+**RV2 — Scope & aims clarity** (SANRA items 1–2): Is the topic's importance established, and are the review's aims and scope boundaries (what is included/excluded) explicit?
+
+**RV3 — Evidence-gathering transparency** *(SANRA item 3, suggestion-level)*: Even a narrative review benefits from one paragraph on how the literature was identified (databases, time window, selection logic). This is **not a reject criterion** — phrase it as a SANRA-aligned transparency suggestion. Do not require PRISMA.
+
+**RV4 — Technical & medical accuracy** *(reviewer niche strength)*: Engineering correctness (autoregressive decoding, RAG, RLHF, instruction tuning, hallucination mechanisms, evaluation/mitigation methods) and medical correctness (radiology claims, clinical examples, anatomy/imaging detail). Itemize errors with location. This axis is where a domain-literate reviewer adds unique value.
+
+> **Model-class conflation sub-probe** *(LLM/VLM-in-radiology reviews)*: check whether the manuscript treats text-only LLMs, multimodal/vision-language models (VLMs), conventional narrow CAD, and image-reconstruction artifacts as one phenomenon with one risk profile. They are distinct: a text-only LLM doing report structuring/summarization/grammar correction (low-risk language support) carries very different failure modes from a VLM asked to interpret images (high-risk image interpretation). When a "primer on LLMs" silently spans these classes, flag it — and note that the most actionable radiology-specific contribution is usually a **task-risk stratification** (which tasks are acceptable, which need safeguards, which to avoid) rather than a generic "LLMs hallucinate" statement.
+
+> **Verify-your-own-criticism gate**: before raising a technical inaccuracy or a citation–claim mismatch as a major finding, cross-check the assertion against a current authoritative source (the full cited paper, CrossRef, arXiv). Fast-moving fields make critiques go stale: a method dismissed as "not applicable" may have been adapted, and a "preprint" may since have been peer-reviewed. If unverified, downgrade to a hedged "Please verify…"; if confirmed, state it firmly. This applies with extra force to claims about what a cited reference *argues* (a review about hallucination must not itself mis-attribute a source).
+
+**RV5 — Taxonomy / synthesis coherence**: Is the manuscript's classification mutually exclusive and collectively exhaustive, and does it map to established taxonomies (intrinsic vs extrinsic; faithfulness vs factuality; published hallucination surveys)? Ad-hoc categories should be reconciled with an established taxonomy. Is the synthesis integrative rather than a list?
+
+> **Source/cause vs masking/amplifying-factor sub-probe**: when the manuscript presents a list of "sources" or "causes" of the error, check that each item is genuinely *generative* of the error rather than a factor that lets it go *undetected* or *amplifies its impact*. A recurring miscategorization: black-box opacity and automation bias are framed as sources of hallucination, but they do not generate hallucinations — opacity hides them and automation bias amplifies their downstream effect. Mis-labeling a masking/amplifying factor as a source is a **sharper conceptual defect than "scattered/ad-hoc taxonomy"** (the framework's own pillars are wrong, not just disorganized) — raise it explicitly rather than folding it into a generic synthesis comment.
+
+**RV6 — Balance, currency, citation accuracy** (SANRA items 4–5): Is conflicting evidence handled fairly (no cherry-picking)? Are citations current and primary-source-weighted? Spot-check citation accuracy (author/year/claim match) — for a review *about* hallucination, citation errors are thematically critical. **Single-anchor overload**: when a load-bearing clinical claim rests on essentially one study (n=1, often abstract-only, paywalled, or unreplicated), check the Abstract↔body register for that anchor — a MAJOR red flag is the Abstract calling it "landmark/definitive" while the body concedes the evidence base "is thin." Soften the anchor to "an early signal" and align both claim sites; if a verifiable independent second study exists, add it rather than leaning the whole stake on one source.
+
+**RV7 — Load-bearing figures/tables** *(editorial value-add axis; SANRA item 6 secondary)*: Are there standardized comparison tables, a landscape figure, or a concrete clinical worked example? Assess whether figures/tables carry synthesis weight or are decorative — strong radiology-AI reviews tend to use standardized comparison matrices and a worked example.
+
+**RV8 — Constructive gap-filling & additions** *(the expected-role probe)*: Identify missing topics/frameworks/key references and propose them as **"consider adding X because it directly supports Y"** — never "must cite." Tier candidates by publication status:
+- *Peer-reviewed guidelines*: TRIPOD-LLM, MI-CLAIM-GEN, and STARD-AI (all Nature Medicine), and the CLAIM 2024 update (Radiology: AI)
+- *Preprint (label as such)*: any not-yet-peer-reviewed arXiv/medRxiv item — name it as a preprint and do not place it at the same level as peer-reviewed guidelines. Verify status before citing, since preprints are frequently published later (a checklist first posted to arXiv may since have appeared in a journal)
+- *Concepts/tools*: RAG specifics (retrieval failure vs fabrication), uncertainty/confidence calibration, radiology-specific evaluation (RadGraph, CheXbert/CheXpert-F1, ReXTrust), regulatory context (FDA 510(k)/CE, RADAR)
+
+Keep additions **proportionate** (≈ ≤1 new reference per page, each motivated; no wholesale rewrite). Suggesting missing *literature/topics* is expected; demanding new *studies* is not.
+
+**Self-citation architecture** *(intellectual-COI, narrative form)*: Check whether the manuscript's weakest / most-deferred axes coincide with the authors' own forthcoming or companion work — a structural signal that the review may be agenda-setting for the authors' pipeline. This is legitimate for an invited review, but it must be made transparent: require a body-level motivation/COI line, and ensure every load-bearing axis carries at least one *independent* (other-group) source so the argument does not collapse to "trust us / see our upcoming paper." Companion-paper citations must stay strictly non-load-bearing ("not relied upon here") and survive into the revision.
+
+**RV9 — Bibliometric circularity of a curated base** *(narrative-review FATAL pattern)*: A non-systematic review that asserts a **field-level / bibliometric property** — "the field has invested heavily in X but neglected Y," a density/asymmetry/maturity gradient across topics — is making a *measured* claim from an *unmeasured* base. Because the reference set was curated, not searched, the asymmetry is a property of the authors' selection, not of the field; a hostile reviewer manufactures the opposite thesis by re-curating. This is a **Fatal** candidate when the gradient is the manuscript's central contribution. Two acceptable resolutions (a strategy fork, not a wording tweak):
+- **Down-scope (narrative/invited route)**: restate the claim as "within the literature surveyed here" and **delete every field-level phrasing at every claim site** — Abstract, body, each figure/table caption, and Conclusion. The grep discipline matters: a single residual "the field has…" sentence re-arms the rebuttal, so the down-scope must leave a field-level residue of zero.
+- **Measure (scoping route)**: add a documented search string + time window + per-axis counts so the asymmetry becomes a reproducible, reviewer-survivable measurement (this converts the piece toward a scoping review and is journal-agnostic).
+Also separate "volume of methods papers" from "clinical evidence": an axis can be *engineering-dense yet clinically empty*, and calling such an axis "mature/well-invested" while the same section concedes it measures the wrong thing is an internal contradiction. Reframing the gradient as engineering-density vs clinical/reader-validation is usually the stronger, defensible thesis.
+
+**Output template (RV1 example)**:
+> "The topic of LLM hallucinations is now addressed by several recent reviews, so it would strengthen the manuscript to state explicitly what this primer adds beyond them — for example, a radiology-specific failure taxonomy, a worked clinical example, or an actionable verification workflow that existing general-purpose reviews do not provide. As written, the Introduction does not position the contribution against the current review literature, which makes the incremental value difficult to judge."
+
+**Output template (RV8 example)**:
+> "The mitigation section would benefit from engaging with emerging reporting standards for generative models, as these directly support the manuscript's call for controlled deployment. Consider adding a brief discussion of TRIPOD-LLM and MI-CLAIM-GEN (both peer-reviewed reporting guidelines for LLM/generative studies), and clarifying how retrieval-augmented generation shifts the dominant failure mode from fabrication toward retrieval error rather than eliminating hallucination, a distinction the current text conflates."
+
+**Output template (RV9 example)**:
+> "The central thesis — that the field has invested heavily in image generation while neglecting detection and education — is presented as a property of the field, but the evidence is a curated, non-systematic reference set, so the asymmetry could equally reflect the authors' selection. As written, an opposing reviewer could re-curate the citations and reach the reverse conclusion. We suggest either (a) restating the claim throughout as 'within the literature surveyed here' and removing the field-level phrasings in the Abstract, figure captions, and Conclusion, or (b) adding a brief documented search (sources, window, per-theme counts) so the asymmetry is reproducible. Relatedly, the 'mature' provenance axis is dense in engineering/IP methods but, by the manuscript's own admission, carries no clinical or reader validation; distinguishing 'volume of methods papers' from 'clinical evidence' would make the contrast sharper and harder to rebut."
+
+This module gives review/narrative manuscripts a dedicated audit gate, on the principle that constructive gap-filling is an expected part of appraising a review article.
+
+## When this module does not apply
+
+These probes are out of scope for:
+
+- Original research / development / validation / trial (→ Phase 2 + 2A/2B/2C)
+- Systematic review **with pooling** (meta-analysis) → Phase 2A
+- Case report / editorial / commentary (opinion form; no recommendation gating)
+
+Moved here from the consuming skill so the scope travels with the probes.

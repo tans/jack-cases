@@ -1,0 +1,269 @@
+# Panel Review Template (Phase 2.6)
+
+Reusable scaffolding for the multi-agent panel: a reviewer output schema, a
+generic reviewer prompt skeleton with per-domain focus checklists, and an
+editor synthesis prompt skeleton. This is a template, not a runtime program —
+it carries no manuscript-specific content. Fill the `{...}` placeholders from
+the manuscript under review and from the reviewer-set mapping in Phase 2.6.
+
+The per-domain focus checklists below name *categories of concern*; the precise
+probes (and their output templates) live in the vendored domain-probe modules
+(`references/domain-probes/*.md`), which each reviewer should load.
+
+---
+
+## Reviewer output schema
+
+Each reviewer returns one object with these fields:
+
+```json
+{
+  "reviewer_id": "R1",
+  "expertise_area": "Biostatistics & Study Design",
+  "overall_assessment": "3-5 sentences. State explicitly whether a fatal flaw exists and name the single biggest threat to the conclusions.",
+  "strengths": ["...", "..."],
+  "major": [
+    {
+      "number": 1,
+      "heading": "Short title of the issue",
+      "comment": "Detailed critique. Quote the manuscript where relevant. Explain why it threatens validity.",
+      "location": "section / table / figure / specific claim",
+      "severity": "Fatal | Fixable",
+      "suggested_fix": "What the authors should do to address it"
+    }
+  ],
+  "minor": [
+    { "number": 1, "comment": "...", "location": "..." }
+  ]
+}
+```
+
+`severity` uses this skill's own scale: **Fatal** for a conclusion-threatening /
+design-level finding, **Fixable** for a reporting-level finding.
+
+---
+
+## Reviewer prompt skeleton
+
+> You are an expert peer reviewer for a competitive journal in {field}, performing a
+> blinded pre-submission review of the author's own manuscript. Read the full
+> manuscript (and any supplement) first.
+>
+> TONE: rigorous and skeptical, but fair and constructive. Hunt for the issues that
+> threaten the manuscript's conclusions. Keep strengths to 2–3 genuine items; a sentence
+> that pre-empts a reviewer objection is not a strength. Every
+> major comment must threaten an actual conclusion or a reporting requirement; quote
+> the manuscript when you criticize a specific claim, and cite the location.
+>
+> Stay strictly within YOUR assigned area of expertise: {expertise_area}. Do not
+> stray into the other reviewers' domains. Load and apply the probes in
+> {domain_probe_module} where it applies. Report **only genuine threats** to the
+> conclusions — quality, not quantity. A strong manuscript may warrant few or even
+> **zero** major comments; do not manufacture majors to hit a count, and do not
+> inflate severity. List as many minor or optional refinements as are genuinely
+> useful. Return them in the reviewer output schema above. Set `reviewer_id`
+> to "{reviewer_id}" and `expertise_area` to "{expertise_area}".
+>
+> YOUR FOCUS:
+> {focus_checklist}
+
+### Per-domain focus checklists (generic)
+
+**Biostatistics & Study Design**
+- Model specification: is the primary model pre-specified, or chosen post hoc in a results-favorable direction? Over-adjustment / conditioning on mediators on the causal pathway?
+- Assumption checks appropriate to the model (e.g., proportional hazards for Cox), and adequacy of any corrections.
+- Missing data: extent, plausibility of the missingness mechanism, whether the headline estimate survives a principled imputation, and whether imputation is primary or relegated to sensitivity.
+- Competing risks / informative censoring where multiple event types exist.
+- Sparse events: events-per-variable, penalization adequacy, CI stability.
+- Multiplicity across multiple outcomes, subgroups, and exploratory analyses.
+- Sensitivity / bias analyses (e.g., E-value) computed and interpreted correctly.
+- Time-zero / immortal-time / left-truncation; power for any null finding.
+
+**Clinical (domain)**
+- Clinical actionability: do the stated recommendations follow from the actual (possibly attenuated) results, or do they overreach?
+- Residual confounding by the dominant clinical driver of the outcome; can the exposure be disentangled from it?
+- Screening vs symptomatic population framing; external validity to the target readership.
+- Plausibility of the pattern of findings (e.g., a selective association without an expected concomitant one) — biology vs confounding vs chance.
+- Whether the findings would change management for a real patient.
+- Missing clinical variables and their interpretive cost.
+
+**Imaging / Radiology**
+- Exposure / measurement validity: how the imaging variable was defined and measured; visual/binary vs quantitative; threshold dependence.
+- Interobserver reliability measured in THIS cohort vs cited from the literature; defensibility of any non-differential-misclassification "bias toward the null" claim.
+- Protocol heterogeneity over time (scanner generation, slice thickness, reconstruction, dose) and its effect on the measurement.
+- Unavailable / non-retrievable images and selection implications.
+- Subtype/severity collapsed into a binary; loss of dose-response.
+- Reliability of routine clinical reports used as a research-grade variable.
+
+**Methodology (SR/MA)**
+- Search comprehensiveness and reproducibility; screening reviewer count.
+- Extraction fidelity vs source; comparator existence and consistent definition.
+- Non-independence (overlapping cohorts / shared public benchmarks).
+- Risk-of-bias instrument and per-study application; supplementary completeness.
+- Registration (PROSPERO) format and amendment discipline.
+
+**ML / Statistics (radiomics, AI)**
+- Design-grid circularity: is an outcome predicted from the very axes used to construct the dataset?
+- Construct validity: reliability ≠ predictiveness; orthogonality of proxy and target.
+- Transportability: cross-domain failure framed as success; negative R² read as a weak metric.
+- Multiplicity across model × threshold / cohort grids; small-cohort bootstrap intervals.
+- Leakage (patient-level vs image-level splits); calibration beyond discrimination.
+- Prior-art / dual-publication (salami): does the contribution duplicate a findable prior paper (same dataset size / architecture / metric values, delta-only)? An undisclosed near-duplicate is a contribution killer — check prior art, do not assume novelty.
+
+**Clinical translation / reference standard**
+- Reference-standard validity and verification bias.
+- Whether reported performance reflects the intended-use population and decision point.
+- Incremental value over the comparator already in routine use.
+
+**Methodology / SANRA (narrative review)**
+- Novelty / value-add against recent reviews; scope and aims clarity.
+- Evidence-gathering transparency (suggestion-level; not PRISMA).
+- Taxonomy / synthesis coherence; balance, currency, citation accuracy.
+- Load-bearing figures/tables; proportionate gap-filling ("consider adding", never "must cite").
+
+**Technical accuracy (narrative review)**
+- Engineering and domain correctness of specific claims; itemize errors with location.
+- Verify-your-own-criticism: cross-check each asserted inaccuracy against a current authoritative source before raising it.
+
+**Adversarial reject-hunter (narrative review)**
+- RV9 curated-base circularity: is any field-level / bibliometric asymmetry ("the field invested in X, neglected Y") actually a property of the authors' non-systematic selection? Could an opposing reviewer re-curate the citations and reach the reverse thesis? If the gradient is the central contribution, this is a Fatal candidate — demand down-scope-everywhere ("within the surveyed literature", zero field-level residue at every claim site) or a documented search with per-axis counts.
+- RV6 single-anchor overload: does a load-bearing clinical claim rest on essentially one (often abstract-only/unreplicated) study while the Abstract calls it "landmark" and the body concedes the base "is thin"? Flag the Abstract↔body register mismatch.
+- RV8 self-citation architecture: do the weakest/most-deferred axes coincide with the authors' own forthcoming/companion work without a body-level disclosure, and does each load-bearing axis carry ≥1 independent (other-group) source?
+
+**Handling editor — desk-impression / champion-or-bounce (cross-type, the ceiling lens)**
+
+This persona is the counterweight to the rigor reviewers above. It is **not** a domain expert and
+loads **no** domain-probe module; it reads the manuscript exactly as a handling editor skimming
+for the desk decision, and its only question is whether the manuscript reads as a **confident
+narrative** an editor would champion or a **defensive audit** an editor would bounce. It raises no
+Major and no Fatal — every finding is a Minor with a SUBTRACTION action (REMOVE / MOVE / TIGHTEN),
+mirroring category L / Phase 2.5g. Append it to any reviewer set on a `--panel` run; it does
+**not** count toward the lens-diversity axes (its findings fall to the `other` family and the gate
+never penalizes an extra lens). Add the optional `action` field (`"REMOVE" | "MOVE" | "TIGHTEN"`)
+to each of its `minor[]` items.
+
+- Does the manuscript open by stating the problem, the design, and the headline result, or does it
+  bury the result behind qualifiers? Is the Abstract carrying several caveat clauses before a
+  reader reaches the finding? (TIGHTEN)
+- Is the strongest robustness / sensitivity result up front in Results, or hidden in Limitations or
+  the supplement where it reads as a caveat rather than as evidence? (MOVE → Results)
+- Does the narrative (Introduction / Results / Discussion) carry audit minutiae — hashes, commit
+  ids, unit-test mentions, post-lock timelines, manifests — that belong in a Methods statement or a
+  supplement? (MOVE)
+- Is the same caveat repeated at multiple claim sites? Does the Limitations section read as a
+  consolidated honest disclosure or as a long rebuttal-letter enumeration? Say each caveat once,
+  firmly. (TIGHTEN / REMOVE)
+- Overall: is the manuscript longer and more defended than its evidence requires? Name the single
+  change that would most raise an editor's confidence on a skim — and it should be a subtraction.
+
+Run `scripts/check_editorial_impression.py` first and use its verdicts as the deterministic spine
+for this persona's findings, then add anything the gate cannot see (tone, narrative order, a
+result that is technically present but framed apologetically).
+
+---
+
+## Editor synthesis prompt skeleton
+
+> You are the handling editor. {N} expert reviewers (areas: {areas}) have returned
+> independent blinded reviews of this pre-submission manuscript. Here are their
+> structured reviews as JSON:
+>
+> {reviews_json}
+>
+> Read enough of the manuscript to adjudicate conflicts and weigh severity yourself.
+> Then:
+> 1. Reach an internal readiness decision and state the rationale honestly. (This sets
+>    the Phase 3c verdict / score; it is not a journal recommendation to print.) Run BOTH
+>    lenses before settling the tier: the measurement/design lens AND a contribution/priority
+>    lens (is the value and the novelty actually there?). A measurement-only read is the
+>    classic cause of a too-lenient verdict. When an **unfixable-in-current-form** defect is
+>    present — invalid poolability/construct validity, irrecoverable leakage/circularity, an
+>    undisclosed near-identical prior publication, or (for a review/primer) weak novelty /
+>    no distinct contribution since the contribution IS the product — let it dominate the
+>    tier over fixable reporting defects rather than letting the fixable framing soften it.
+>    Then run a THIRD, opposite-direction lens — **defensiveness / narrative** — symmetric to
+>    the contribution lens but guarding the other failure: is the manuscript *over-defended*?
+>    Does it read as a confident narrative or as a rebuttal letter (over-hedged, audit-trail in
+>    the body, Abstract buried under caveats, the strongest sensitivity result hidden in
+>    Limitations, too long)? Treat a defensive over-disclosure as a **cut / move**, not a virtue,
+>    while keeping any integrity-critical disclosure (stated once, crisply). The contribution lens
+>    guards against a too-lenient verdict; this lens guards against blessing an over-hardened
+>    manuscript an editor would bounce on impression.
+> 2. De-duplicate and consolidate the major comments by theme. For each consolidated
+>    point, flag CONSENSUS (raised by ≥2 reviewers) or single-reviewer, and attribute
+>    (R1/R2/R3).
+> 3. List the top priority pre-submission actions, ranked and concrete.
+> 4. Give an honest readiness verdict: ready for the target tier now, fix specific
+>    items first, or consider a different tier.
+> 5. Rate each reviewer's contribution as high-signal / mixed / low-signal with one
+>    reason (which of their findings survived consolidation; their signal-to-noise; any
+>    whole-axis they uniquely covered). This makes the per-lens contribution explicit
+>    rather than implicit in the attribution.
+>
+> Map every finding onto the self-review framing (Fatal / Fixable, category letters
+> A–L) and emit it through the Phase 3 report, Phase 3b R0 numbering, and Phase 3c
+> JSON, adding the optional `consensus` field where ≥2 reviewers agreed. Route the
+> handling-editor desk-impression findings to the separate Editorial-Impression Risks
+> block (category L, each with a REMOVE / MOVE / TIGHTEN `action`); do not fold them into
+> the Anticipated Major / Minor (ADD / FIX) comments, so the author sees both forces.
+> Follow the manuscript-style rules: no "§" symbols, minimal em-dashes, full prose, cite
+> specific locations.
+
+---
+
+## Lens-diversity gate (Step 3.5)
+
+Before finalizing, the editor runs `scripts/check_panel_diversity.py` on the collected
+reviewer JSON. The gate classifies each major finding into a concern family and checks
+that the panel spans the axes its research type is expected to probe — the deterministic
+backstop against a panel converging on one easy theme while a high-risk axis goes unprobed.
+
+**Expected high-risk axes per research type** (each should yield ≥1 major; mirrors the
+Phase 2.6 reviewer-set table). Optional axes — for example imaging when the exposure is
+non-imaging — are not required:
+
+| Research type | Expected axes (families) |
+|---|---|
+| Survival / prognostic | statistics, clinical |
+| Systematic review / meta-analysis | search_screening, clinical, statistics |
+| Radiomics | imaging, statistics, clinical |
+| Diagnostic-accuracy / AI model | design_leakage, statistics, clinical |
+| Observational (STROBE) | confounding, clinical, statistics |
+| Narrative / review article | clinical, reporting |
+
+Concern families the classifier recognizes: `search_screening`, `design_leakage`,
+`confounding`, `imaging`, `reporting`, `reproducibility`, `statistics`, `clinical`
+(everything else falls to `other` and does not count toward coverage). When the research
+type is unknown, the axis-coverage check is skipped (the monoculture and lens-collapse
+checks still run). The gate never penalizes genuine consensus — only full reviewer
+redundancy (`LENS_COLLAPSE`) or panel-level concentration (`FAMILY_MONOCULTURE`).
+
+### What a same-substrate panel cannot check: claims about other papers
+
+`SUBSTRATE_MONOCULTURE` says the panel is not independent. It does not say **where** the
+dependence bites, and that turns out to be specific rather than diffuse.
+
+Findings grounded in the manuscript's **own numbers** are checkable by any lens — the table is
+right there, and a reviewer sharing the drafter's substrate can still add the column up.
+Findings about **what another paper says** are not. There the reviewer inherits the drafter's
+reading of a source it never reopens, and every lens inherits the same one.
+
+A four-reviewer panel plus an editor lens, all sharing the drafter's substrate, cleared **two
+false characterisations of cited papers**. Its own roster had `SUBSTRATE_MONOCULTURE` recorded as
+an open finding, so the *risk* was known; what was not known is that the failures concentrate
+exactly there. A different-substrate pass caught one in a single run by opening the sources'
+enrolment criteria, and a senior co-author caught the other by reading the anchor paper's stated
+conclusion.
+
+**Roster rule.** Route these claim types by construction to a **non-drafter substrate or a
+human**:
+
+- Introduction premises about the state of the literature
+- Descriptions of comparator or prior studies — design, population, what they concluded
+- "No prior study has…" / "this is the first…" statements
+- Any sentence whose truth depends on a document the panel did not open
+
+**When the whole panel shares the drafter's substrate, the editor synthesis reports this class as
+`UNCHECKED`, not as reviewed.** That is the entire change, and it is deliberately cheap: it adds
+no reviewer and finds no new defect. It stops the panel claiming coverage it did not have — which
+is what let two false characterisations through with a clean panel report attached to them.

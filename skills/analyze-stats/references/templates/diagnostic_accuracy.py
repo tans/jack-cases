@@ -1,0 +1,462 @@
+"""
+Template: Diagnostic Accuracy Analysis
+Calculates sensitivity, specificity, PPV, NPV, accuracy, AUC with 95% CIs.
+Generates ROC curve and optional model comparison.
+
+Usage:
+    Modify the CONFIGURATION section below, then run:
+        python diagnostic_accuracy.py
+
+Input:  CSV with ground truth and predicted scores/labels
+Output: diagnostic_accuracy_table.csv, roc_curve.pdf/.png, summary text
+"""
+
+# === REPRODUCIBILITY HEADER ===
+import sys
+import os
+import datetime
+import numpy as np
+import pandas as pd
+import scipy
+from scipy import stats
+
+import sklearn
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+STYLE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "style", "figure_style.mplstyle")
+if os.path.exists(STYLE_PATH):
+    plt.style.use(STYLE_PATH)
+
+# === CONFIGURATION (modify for your study) ===
+INPUT_FILE = "data.csv"           # Path to input data
+OUTPUT_DIR = "."                  # Output directory
+TRUTH_COL = "ground_truth"       # Column: binary ground truth (0/1)
+SCORE_COLS = ["model_score"]     # Column(s): predicted probability/score (for ROC)
+PRED_COLS = ["model_pred"]       # Column(s): binary predictions (0/1) at chosen threshold
+MODEL_NAMES = ["Model"]          # Display names for each model
+# Operating point for Se/Sp/PPV/NPV when a PRED_COLS column is absent:
+#   a number  -> a PRESPECIFIED cut-off (score >= THRESHOLD is positive)
+#   "youden"  -> cut-off chosen on THESE data; exploratory only, every output is tagged
+#                optimistic (Leeflang et al. 2008, doi:10.1373/clinchem.2007.096032)
+#   None      -> required prediction columns; the script stops if they are missing
+THRESHOLD = None
+# Patient ID column when a patient contributes several rows (lesions, eyes, visits).
+# Wilson and DeLong CIs assume every row is an independent patient; with CLUSTER_COL
+# set, all CIs come from a bootstrap that resamples patients with all their rows.
+CLUSTER_COL = None
+N_BOOTSTRAP = 2000
+COMPARE_MODELS = False            # True to run DeLong test between models
+POSITIVE_LABEL = 1                # Value representing positive class
+# ==============================================
+
+
+def wilson_ci(p: float, n: int, alpha: float = 0.05) -> tuple:
+    """Wilson score confidence interval for a proportion."""
+    if n == 0:
+        return (np.nan, np.nan)  # No denominator: undefined, not zero performance.
+    z = stats.norm.ppf(1 - alpha / 2)
+    denominator = 1 + z**2 / n
+    center = (p + z**2 / (2 * n)) / denominator
+    spread = z * np.sqrt((p * (1 - p) + z**2 / (4 * n)) / n) / denominator
+    return (max(0.0, center - spread), min(1.0, center + spread))
+
+
+def delong_auc_variance(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    """Estimate AUC variance using the DeLong method."""
+    pos = y_score[y_true == 1]
+    neg = y_score[y_true == 0]
+    m = len(pos)
+    n = len(neg)
+
+    v_pos = np.array([np.mean(neg < p) + 0.5 * np.mean(neg == p) for p in pos])
+    v_neg = np.array([np.mean(pos > nv) + 0.5 * np.mean(pos == nv) for nv in neg])
+
+    var_auc = (np.var(v_pos, ddof=1) / m) + (np.var(v_neg, ddof=1) / n)
+    return var_auc
+
+
+def delong_ci(y_true: np.ndarray, y_score: np.ndarray,
+              alpha: float = 0.05) -> tuple:
+    """AUC with DeLong 95% CI."""
+    from sklearn.metrics import roc_auc_score
+
+    auc = roc_auc_score(y_true, y_score)
+    var = delong_auc_variance(y_true, y_score)
+    se = np.sqrt(var)
+    z = stats.norm.ppf(1 - alpha / 2)
+    ci_low = max(0.0, auc - z * se)
+    ci_high = min(1.0, auc + z * se)
+    return auc, ci_low, ci_high
+
+
+def delong_test(y_true: np.ndarray, y_score1: np.ndarray,
+                y_score2: np.ndarray) -> tuple:
+    """DeLong test for comparing two AUCs on the same dataset."""
+    from sklearn.metrics import roc_auc_score
+
+    auc1 = roc_auc_score(y_true, y_score1)
+    auc2 = roc_auc_score(y_true, y_score2)
+
+    var1 = delong_auc_variance(y_true, y_score1)
+    var2 = delong_auc_variance(y_true, y_score2)
+
+    pos_mask = y_true == 1
+    neg_mask = y_true == 0
+    m = pos_mask.sum()
+    n = neg_mask.sum()
+
+    v1_pos = np.array([np.mean(y_score1[neg_mask] < p) +
+                        0.5 * np.mean(y_score1[neg_mask] == p) for p in y_score1[pos_mask]])
+    v2_pos = np.array([np.mean(y_score2[neg_mask] < p) +
+                        0.5 * np.mean(y_score2[neg_mask] == p) for p in y_score2[pos_mask]])
+    v1_neg = np.array([np.mean(y_score1[pos_mask] > nv) +
+                        0.5 * np.mean(y_score1[pos_mask] == nv) for nv in y_score1[neg_mask]])
+    v2_neg = np.array([np.mean(y_score2[pos_mask] > nv) +
+                        0.5 * np.mean(y_score2[pos_mask] == nv) for nv in y_score2[neg_mask]])
+
+    cov = np.cov(v1_pos, v2_pos)[0, 1] / m + np.cov(v1_neg, v2_neg)[0, 1] / n
+
+    z = (auc1 - auc2) / np.sqrt(var1 + var2 - 2 * cov)
+    p = 2 * stats.norm.sf(abs(z))
+    return z, p
+
+
+def youdens_threshold(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    """Find optimal threshold using Youden's J statistic."""
+    from sklearn.metrics import roc_curve
+
+    fpr, tpr, thresholds = roc_curve(y_true, y_score)
+    j = tpr - fpr
+    optimal_idx = np.argmax(j)
+    return thresholds[optimal_idx]
+
+
+def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray,
+                    y_score: np.ndarray = None) -> dict:
+    """Compute diagnostic accuracy metrics with Wilson CIs."""
+    tp = np.sum((y_pred == 1) & (y_true == 1))
+    fp = np.sum((y_pred == 1) & (y_true == 0))
+    tn = np.sum((y_pred == 0) & (y_true == 0))
+    fn = np.sum((y_pred == 0) & (y_true == 1))
+    n = len(y_true)
+
+    sens = tp / (tp + fn) if (tp + fn) > 0 else np.nan
+    spec = tn / (tn + fp) if (tn + fp) > 0 else np.nan
+    ppv = tp / (tp + fp) if (tp + fp) > 0 else np.nan
+    npv = tn / (tn + fn) if (tn + fn) > 0 else np.nan
+    acc = (tp + tn) / n if n > 0 else np.nan
+
+    metrics = {
+        "Sensitivity": (sens, *wilson_ci(sens, tp + fn)),
+        "Specificity": (spec, *wilson_ci(spec, tn + fp)),
+        "PPV": (ppv, *wilson_ci(ppv, tp + fp)),
+        "NPV": (npv, *wilson_ci(npv, tn + fn)),
+        "Accuracy": (acc, *wilson_ci(acc, n)),
+    }
+
+    if y_score is not None:
+        auc, auc_lo, auc_hi = delong_ci(y_true, y_score)
+        metrics["AUC"] = (auc, auc_lo, auc_hi)
+
+    metrics["_counts"] = {"TP": int(tp), "FP": int(fp), "TN": int(tn), "FN": int(fn)}
+    return metrics
+
+
+def cluster_bootstrap_ci(y_true: np.ndarray, y_pred: np.ndarray, y_score, groups,
+                         n_boot: int = 2000, seed: int = 42, alpha: float = 0.05) -> dict:
+    """Percentile CIs for every metric, resampling clusters (patients) with all
+    their rows (Genders et al. 2012, doi:10.1148/radiol.12120509)."""
+    from sklearn.metrics import roc_auc_score
+
+    rng = np.random.default_rng(seed)
+    groups = np.asarray(groups)
+    ids = np.unique(groups)
+    rows_of = {g: np.flatnonzero(groups == g) for g in ids}
+    names = ["Sensitivity", "Specificity", "PPV", "NPV", "Accuracy"]
+    if y_score is not None:
+        names.append("AUC")
+    draws = {k: [] for k in names}
+    for _ in range(n_boot):
+        idx = np.concatenate([rows_of[g] for g in rng.choice(ids, len(ids), replace=True)])
+        yt, yp = y_true[idx], y_pred[idx]
+        tp = np.sum((yp == 1) & (yt == 1)); fp = np.sum((yp == 1) & (yt == 0))
+        tn = np.sum((yp == 0) & (yt == 0)); fn = np.sum((yp == 0) & (yt == 1))
+        for k, num, den in [("Sensitivity", tp, tp + fn), ("Specificity", tn, tn + fp),
+                            ("PPV", tp, tp + fp), ("NPV", tn, tn + fn),
+                            ("Accuracy", tp + tn, len(idx))]:
+            if den > 0:
+                draws[k].append(num / den)
+        if y_score is not None and len(np.unique(yt)) == 2:
+            draws["AUC"].append(roc_auc_score(yt, y_score[idx]))
+    q = [100 * alpha / 2, 100 * (1 - alpha / 2)]
+    return {k: tuple(np.percentile(v, q)) if v else (np.nan, np.nan) for k, v in draws.items()}
+
+
+def plot_roc(y_true: np.ndarray, score_dict: dict, output_dir: str) -> None:
+    """Generate ROC curve figure with AUC in legend."""
+    from sklearn.metrics import roc_curve
+
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
+    colors = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#F0E442"]
+
+    for i, (name, y_score) in enumerate(score_dict.items()):
+        fpr, tpr, _ = roc_curve(y_true, y_score)
+        auc, ci_lo, ci_hi = delong_ci(y_true, y_score)
+        label = f"{name}: AUC = {auc:.3f} ({ci_lo:.3f}-{ci_hi:.3f})"
+        ax.plot(fpr, tpr, color=colors[i % len(colors)], linewidth=1.5, label=label)
+
+    ax.plot([0, 1], [0, 1], color="gray", linestyle="--", linewidth=0.8)
+    ax.set_xlabel("1 - Specificity (FPR)")
+    ax.set_ylabel("Sensitivity (TPR)")
+    ax.set_xlim([-0.02, 1.02])
+    ax.set_ylim([-0.02, 1.02])
+    ax.set_aspect("equal")
+    ax.legend(loc="lower right", fontsize=7)
+
+    fig.tight_layout()
+    pdf_path = os.path.join(output_dir, "roc_curve.pdf")
+    png_path = os.path.join(output_dir, "roc_curve.png")
+    fig.savefig(pdf_path, format="pdf", bbox_inches="tight")
+    fig.savefig(png_path, format="png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {pdf_path}")
+    print(f"Saved: {png_path}")
+
+
+def plot_confusion_matrix(y_true: np.ndarray, pred_dict: dict,
+                          model_names: list, output_dir: str) -> None:
+    """Generate side-by-side confusion matrices using matplotlib."""
+    n_models = len(pred_dict)
+    fig, axes = plt.subplots(1, n_models, figsize=(3.5 * n_models, 3.5))
+    if n_models == 1:
+        axes = [axes]
+
+    for ax, (name, y_pred) in zip(axes, pred_dict.items()):
+        from sklearn.metrics import confusion_matrix as cm_func
+        cm = cm_func(y_true, y_pred, labels=[0, 1])
+        cm_pct = cm.astype(float) / cm.sum() * 100
+
+        im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
+        ax.set_title(name, fontsize=10)
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("Actual")
+        ax.set_xticks([0, 1])
+        ax.set_yticks([0, 1])
+        ax.set_xticklabels(["Neg", "Pos"])
+        ax.set_yticklabels(["Neg", "Pos"])
+
+        # Annotate cells with count and percentage
+        thresh = cm.max() / 2.0
+        for i in range(2):
+            for j in range(2):
+                ax.text(j, i, f"{cm[i, j]}\n({cm_pct[i, j]:.1f}%)",
+                        ha="center", va="center", fontsize=9,
+                        color="white" if cm[i, j] > thresh else "black")
+
+    fig.tight_layout()
+    pdf_path = os.path.join(output_dir, "confusion_matrix.pdf")
+    png_path = os.path.join(output_dir, "confusion_matrix.png")
+    fig.savefig(pdf_path, format="pdf", bbox_inches="tight",
+                metadata={"CreationDate": None, "ModDate": None})
+    fig.savefig(png_path, format="png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {pdf_path}")
+    print(f"Saved: {png_path}")
+
+
+def plot_calibration(y_true: np.ndarray, score_dict: dict,
+                     output_dir: str) -> None:
+    """Generate calibration curves with Brier scores."""
+    from sklearn.calibration import calibration_curve
+    from sklearn.metrics import brier_score_loss
+
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
+    colors = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#F0E442"]
+
+    ax.plot([0, 1], [0, 1], color="gray", linestyle="--", linewidth=0.8,
+            label="Perfect calibration")
+
+    for i, (name, y_score) in enumerate(score_dict.items()):
+        brier = brier_score_loss(y_true, y_score)
+        fraction_pos, mean_predicted = calibration_curve(
+            y_true, y_score, n_bins=10, strategy="uniform"
+        )
+        ax.plot(mean_predicted, fraction_pos, marker="o", markersize=4,
+                color=colors[i % len(colors)], linewidth=1.5,
+                label=f"{name} (Brier = {brier:.3f})")
+
+    ax.set_xlabel("Mean predicted probability")
+    ax.set_ylabel("Fraction of positives")
+    ax.set_xlim([-0.02, 1.02])
+    ax.set_ylim([-0.02, 1.02])
+    ax.legend(loc="lower right", fontsize=7)
+
+    fig.tight_layout()
+    pdf_path = os.path.join(output_dir, "calibration_plot.pdf")
+    png_path = os.path.join(output_dir, "calibration_plot.png")
+    fig.savefig(pdf_path, format="pdf", bbox_inches="tight")
+    fig.savefig(png_path, format="png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {pdf_path}")
+    print(f"Saved: {png_path}")
+
+
+def save_performance_table(results: dict, output_dir: str, notes: dict = None) -> None:
+    """Save performance metrics as CSV and print markdown."""
+    rows = []
+    for model_name, metrics in results.items():
+        row = {"Model": model_name}
+        row.update((notes or {}).get(model_name, {}))
+        for metric_name, vals in metrics.items():
+            if metric_name.startswith("_"):
+                continue
+            val, ci_lo, ci_hi = vals
+            row[metric_name] = f"{val:.3f} ({ci_lo:.3f}-{ci_hi:.3f})"
+        counts = metrics.get("_counts", {})
+        for k, v in counts.items():
+            row[k] = v
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    csv_path = os.path.join(output_dir, "diagnostic_accuracy_table.csv")
+    df.to_csv(csv_path, index=False)
+    print(f"\nSaved: {csv_path}")
+    print("\n--- Diagnostic Accuracy ---\n")
+    print(df.to_markdown(index=False))
+
+
+def print_results_text(results: dict, notes: dict = None) -> None:
+    """Print manuscript-ready results text."""
+    print("\n--- Results Text (copy-paste ready) ---\n")
+    for model_name, metrics in results.items():
+        note = (notes or {}).get(model_name, {})
+        parts = []
+        for metric_name in ["AUC", "Sensitivity", "Specificity", "PPV", "NPV", "Accuracy"]:
+            if metric_name in metrics:
+                val, ci_lo, ci_hi = metrics[metric_name]
+                parts.append(f"{metric_name} of {val:.3f} (95% CI: {ci_lo:.3f}-{ci_hi:.3f})")
+
+        counts = metrics.get("_counts", {})
+        n = sum(counts.values())
+        n_pos = counts.get("TP", 0) + counts.get("FN", 0)
+        n_neg = counts.get("TN", 0) + counts.get("FP", 0)
+
+        print(f"{model_name} was evaluated on {n} cases "
+              f"({n_pos} positive, {n_neg} negative). "
+              f"The model achieved {', '.join(parts[:-1])}, and {parts[-1]}"
+              f"{' ' + note['Threshold'] if 'Threshold' in note else ''}"
+              f"{'; CIs: ' + note['CI_method'] if 'CI_method' in note else ''}.")
+        print()
+
+
+# === MAIN ===
+if __name__ == "__main__":
+    np.random.seed(42)
+    print(f"Date: {datetime.date.today()}")
+    print(f"Python: {sys.version}")
+    print(f"numpy: {np.__version__}, pandas: {pd.__version__}, scipy: {scipy.__version__}")
+    print(f"sklearn: {sklearn.__version__}")
+    print("=" * 60)
+    print("Diagnostic Accuracy Analysis")
+    print("=" * 60)
+
+    df = pd.read_csv(INPUT_FILE)
+    print(f"\nLoaded: {INPUT_FILE} ({df.shape[0]} rows, {df.shape[1]} columns)")
+
+    y_true = df[TRUTH_COL].values
+
+    # Prevalence
+    prev = y_true.mean()
+    print(f"Prevalence: {int(y_true.sum())}/{len(y_true)} ({100*prev:.1f}%)")
+
+    all_results = {}
+    score_dict = {}
+    pred_dict = {}
+    notes = {}
+    groups = df[CLUSTER_COL].values if CLUSTER_COL else None
+    if groups is None:
+        print("CIs: Wilson (proportions) and DeLong (AUC) assume every row is an independent "
+              "patient. If patients contribute several rows, set CLUSTER_COL.")
+    else:
+        print(f"CIs: cluster bootstrap over {CLUSTER_COL} "
+              f"({len(np.unique(groups))} clusters, {len(df)} rows, B = {N_BOOTSTRAP}).")
+
+    for i, (score_col, pred_col, name) in enumerate(
+        zip(SCORE_COLS, PRED_COLS, MODEL_NAMES)
+    ):
+        print(f"\n--- {name} ---")
+        y_score = df[score_col].values if score_col in df.columns else None
+        if y_score is not None:
+            score_dict[name] = y_score
+
+        # Operating point: prespecified predictions or threshold; Youden only on request
+        notes[name] = {}
+        if pred_col in df.columns:
+            y_pred = df[pred_col].values
+            print(f"Predictions: column '{pred_col}' (prespecified labels)")
+        elif y_score is None:
+            raise ValueError(f"Neither prediction column '{pred_col}' nor "
+                             f"score column '{score_col}' found.")
+        elif THRESHOLD == "youden":
+            thresh = youdens_threshold(y_true, y_score)
+            y_pred = (y_score >= thresh).astype(int)
+            notes[name]["Threshold"] = (f"at a threshold of {thresh:.4f} chosen on these data "
+                                        "(Youden; optimistic, not prespecified)")
+            print(f"⚠ Youden threshold {thresh:.4f} chosen ON THE EVALUATION DATA: Se/Sp/PPV/NPV "
+                  "at it are optimistic. Report it as exploratory, or use a prespecified "
+                  "or cross-validated cut-off.")
+        elif THRESHOLD is not None:
+            thresh = float(THRESHOLD)
+            y_pred = (y_score >= thresh).astype(int)
+            notes[name]["Threshold"] = f"at the prespecified threshold of {thresh:g}"
+            print(f"Predictions: {score_col} >= {thresh:g} (prespecified threshold)")
+        else:
+            raise ValueError(
+                f"No prediction column '{pred_col}'. Set THRESHOLD to the PRESPECIFIED cut-off "
+                "for the score, or THRESHOLD = 'youden' for an exploratory, data-derived one.")
+
+        pred_dict[name] = y_pred
+        metrics = compute_metrics(y_true, y_pred, y_score)
+        if groups is not None:
+            boot = cluster_bootstrap_ci(y_true, y_pred, y_score, groups, N_BOOTSTRAP)
+            for k, (lo, hi) in boot.items():
+                metrics[k] = (metrics[k][0], lo, hi)
+            notes[name]["CI_method"] = f"cluster bootstrap over {CLUSTER_COL}"
+        all_results[name] = metrics
+
+    # ROC curve
+    if score_dict:
+        plot_roc(y_true, score_dict, OUTPUT_DIR)
+
+    # Confusion matrix
+    if pred_dict:
+        plot_confusion_matrix(y_true, pred_dict, MODEL_NAMES, OUTPUT_DIR)
+
+    # Calibration plot
+    if score_dict:
+        plot_calibration(y_true, score_dict, OUTPUT_DIR)
+
+    # Model comparison (DeLong test)
+    if COMPARE_MODELS and len(SCORE_COLS) >= 2:
+        print("\n--- Model Comparison (DeLong Test) ---\n")
+        if groups is not None:
+            print("⚠ The DeLong test treats rows as independent; with clustered rows, "
+                  "bootstrap the AUC difference by patient instead.")
+        for i in range(len(SCORE_COLS)):
+            for j in range(i + 1, len(SCORE_COLS)):
+                s1 = df[SCORE_COLS[i]].values
+                s2 = df[SCORE_COLS[j]].values
+                z, p = delong_test(y_true, s1, s2)
+                from sklearn.metrics import roc_auc_score
+                auc1 = roc_auc_score(y_true, s1)
+                auc2 = roc_auc_score(y_true, s2)
+                print(f"{MODEL_NAMES[i]} (AUC={auc1:.3f}) vs "
+                      f"{MODEL_NAMES[j]} (AUC={auc2:.3f}): "
+                      f"z = {z:.3f}, p = {p:.3f}")
+
+    # Save outputs
+    save_performance_table(all_results, OUTPUT_DIR, notes)
+    print_results_text(all_results, notes)

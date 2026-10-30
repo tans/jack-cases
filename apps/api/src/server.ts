@@ -9,6 +9,7 @@ import {registerLists} from './lists.js';
 import {registerEngagement,requirementViewCount,caseViewCount,isFavorited,visitStats} from './engagement.js';
 import {proxyBoundary,authRateLimit,previewRateLimit} from './auth-rate-limit.js';
 import { registerUserRoutes } from './routes/users.js';
+import { registerSkills } from './skills.js';
 const app=new Koa();app.proxy=true;app.use(proxyBoundary);const r=new Router({prefix:'/api'});
 const deployedCommitFile=process.env.DEPLOYED_COMMIT_FILE;
 r.get('/health',ctx=>{let commit:string|null=null;if(deployedCommitFile){try{commit=fs.readFileSync(deployedCommitFile,'utf8').trim()||null;}catch{}}ctx.body={ok:true,commit};});
@@ -54,6 +55,7 @@ const sessionCookie=(ctx:Koa.Context,userId:string)=>{const secret=randomBytes(3
 const safeUser=(u:any)=>({id:u.id,email:u.email,role:u.role,status:u.status,createdAt:u.createdAt});
 registerLists(r,actor,admin);
 registerEngagement(r,actor,admin);
+registerSkills(r);
 // A fixed cost-12 dummy hash makes unknown-user login follow the same bcrypt work path.
 const dummyHash='$2a$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW';
 r.post('/auth/register',async ctx=>{

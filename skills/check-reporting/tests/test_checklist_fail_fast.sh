@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Regression tests for check-reporting check_checklist_exists.py (fail-fast guard).
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+SCRIPT="$REPO_ROOT/skills/check-reporting/scripts/check_checklist_exists.py"
+
+[[ -f "$SCRIPT" ]] || { echo "ENV-ERR: script missing" >&2; exit 2; }
+
+fail=0
+ran=0
+
+assert_exit() {
+    local label="$1" expected="$2" actual="$3"
+    ran=$((ran + 1))
+    if [[ "$expected" == "$actual" ]]; then
+        printf '  PASS  %-52s exit=%s\n' "$label" "$actual"
+    else
+        printf '  FAIL  %-52s expected=%s actual=%s\n' "$label" "$expected" "$actual"
+        fail=$((fail + 1))
+    fi
+}
+
+assert_contains() {
+    local label="$1" needle="$2" haystack="$3"
+    ran=$((ran + 1))
+    if [[ "$haystack" == *"$needle"* ]]; then
+        printf '  PASS  %-52s\n' "$label"
+    else
+        printf '  FAIL  %-52s (missing: %s)\n' "$label" "$needle"
+        fail=$((fail + 1))
+    fi
+}
+
+run() { python3 "$SCRIPT" "$@" >/dev/null 2>&1; echo $?; }
+
+# 1. Vendored checklists that exist on disk -> exit 0.
+assert_exit "STROBE present" 0 "$(run --guideline STROBE)"
+assert_exit "STARD-AI alias present" 0 "$(run --guideline STARD-AI)"
+assert_exit "TRIPOD+AI alias present" 0 "$(run --guideline 'TRIPOD+AI')"
+assert_exit "TRIPOD-LLM alias present" 0 "$(run --guideline 'TRIPOD-LLM')"
+assert_exit "AMSTAR 2 alias present" 0 "$(run --guideline 'AMSTAR 2')"
+assert_exit "RoB 2 alias present" 0 "$(run --guideline 'RoB 2')"
+assert_exit "QUADAS-C alias present" 0 "$(run --guideline QUADAS-C)"
+
+# 2. Now-vendored guidelines -> exit 0 (CONSORT 2025 / SPIRIT 2025 / CARE / CLAIM
+#    2024 were vendored in PR #43; they must resolve to real files).
+assert_exit "CONSORT now vendored" 0 "$(run --guideline 'CONSORT 2025')"
+assert_exit "CARE now vendored" 0 "$(run --guideline CARE)"
+assert_exit "SPIRIT now vendored" 0 "$(run --guideline 'SPIRIT 2025')"
+assert_exit "CLAIM 2024 now vendored" 0 "$(run --guideline 'CLAIM 2024')"
+assert_exit "DECIDE-AI now vendored" 0 "$(run --guideline 'DECIDE-AI')"
+assert_exit "REMARK now vendored" 0 "$(run --guideline REMARK)"
+assert_exit "TARGET now vendored" 0 "$(run --guideline TARGET)"
+assert_exit "target-trial-emulation alias -> TARGET" 0 "$(run --guideline 'target trial emulation')"
+
+# 2b. CONSORT-AI / SPIRIT-AI are now vendored -> exit 0 (routed AND a checklist file exists).
+#     The advertised-but-unvendored contract path is exercised via --simulate-missing-checklist
+#     (sections 4-6 below), since no routed guideline currently ships without a file.
+assert_exit "CONSORT-AI now vendored" 0 "$(run --guideline 'CONSORT-AI')"
+assert_exit "SPIRIT-AI now vendored" 0 "$(run --guideline 'SPIRIT-AI')"
+
+# 2c. Vendored checklists that had no alias, and version numbers _norm keeps ("2.0"): each
+#     returned UNKNOWN_GUIDELINE (exit 2) and sent the model to ask the user about a file it had.
+assert_exit "QUADAS-3 resolves" 0 "$(run --guideline QUADAS-3)"
+assert_exit "PRISMA 2020 for Abstracts resolves" 0 "$(run --guideline 'PRISMA 2020 for Abstracts')"
+assert_exit "GATHER resolves" 0 "$(run --guideline GATHER)"
+assert_exit "SQUIRE 2.0 resolves" 0 "$(run --guideline 'SQUIRE 2.0')"
+assert_exit "ARRIVE 2.0 resolves" 0 "$(run --guideline 'ARRIVE 2.0')"
+# Every vendored checklist must be reachable by at least one alias.
+unaliased="$(python3 - "$SCRIPT" "$REPO_ROOT/skills/check-reporting/references/checklists" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+stems = {p.stem for p in Path(sys.argv[2]).glob("*.md")} - {"README", "LICENSES"}
+print(" ".join(sorted(stems - set(m.ALIAS_TO_STEM.values()))))
+PY
+)"
+assert_exit "every vendored checklist has an alias (unaliased: ${unaliased:-none})" 0 "$([ -z "$unaliased" ] && echo 0 || echo 1)"
+
+# 3. Unrecognised guideline -> exit 2.
+assert_exit "unknown guideline" 2 "$(run --guideline NOT-A-REAL-GUIDELINE)"
+
+# 4. Explicit opt-in downgrades missing/unknown to exit 0 but warns (never silent).
+assert_exit "opt-in missing -> 0" 0 "$(run --simulate-missing-checklist --allow-from-memory)"
+assert_exit "opt-in unknown -> 0" 0 "$(run --guideline NOPE --allow-from-memory)"
+optin_out="$(python3 "$SCRIPT" --simulate-missing-checklist --allow-from-memory 2>&1)"
+assert_contains "opt-in emits NON-AUTHORITATIVE warning" "NON-AUTHORITATIVE" "$optin_out"
+
+# 5. Contract-test simulation (codex Improvement B "Prove" step).
+sim_out="$(python3 "$SCRIPT" --simulate-missing-checklist 2>&1)"
+assert_exit "simulate-missing-checklist" 1 "$(run --simulate-missing-checklist)"
+assert_contains "simulate emits standard violation code" "MISSING_CHECKLIST_CONTRACT_VIOLATION" "$sim_out"
+
+# 6. Violation message carries the standardized machine-greppable code (via the simulated
+#    missing-file path — no routed guideline currently ships without a vendored checklist).
+viol_out="$(python3 "$SCRIPT" --simulate-missing-checklist 2>&1)"
+assert_contains "missing emits standard violation code" "MISSING_CHECKLIST_CONTRACT_VIOLATION" "$viol_out"
+
+printf '\n%d/%d checks passed\n' "$((ran - fail))" "$ran"
+[[ "$fail" -eq 0 ]] || exit 1

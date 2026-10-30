@@ -41,24 +41,33 @@ const exclusions = [
 
 export default function SkillsPage({ embedded = false }: { embedded?: boolean }) {
   const query = useData<SkillManifest>("skills", "/skills");
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const data = query.data;
   const origin = window.location.origin;
+  const total = data?.skills.length ?? 22;
 
-  const installCommand = `# 一键安装全部 ${data?.skills.length ?? 22} 项医疗科研技能（Claude Code + Codex / Cursor）
-mkdir -p ~/.claude/skills ~/.agents/skills
-curl -fsSL ${origin}/api/skills/bundle.tar.gz | tar -xz -C ~/.claude/skills
-cp -R ~/.claude/skills/* ~/.agents/skills/
-echo "已安装，重启 Claude Code / Codex 后生效"`;
+  const bundleAgentPrompt = `请帮我安装虾壳医疗科研助手的全部 ${total} 项医疗科研技能（SKILL.md 格式，Claude Code / Codex / Cursor 通用）。
 
-  const copyInstall = async () => {
-    setCopied(false);
+下载地址：${origin}/api/skills/bundle.tar.gz
+压缩包内含 ${total} 个技能目录（如 deidentify/、analyze-stats/、image-ocr/ 等）。
+
+请执行：
+1. 下载并解压该压缩包
+2. 将解压出的所有技能目录放到 ~/.claude/skills/ 下
+3. 再将全部技能目录复制一份到 ~/.agents/skills/ 下（Codex / Cursor 使用）
+4. 不要修改任何文件内容，完成后列出已安装的技能清单`;
+
+  const skillAgentPrompt = (skill: SkillManifest["skills"][number]) =>
+    `请帮我安装「${skill.title}」（${skill.slug}）技能。\n\n下载地址：${origin}${skill.downloadUrl}\n说明：这是 SKILL.md 格式的 Agent 技能（Claude Code / Codex / Cursor 通用），压缩包解压后得到 ${skill.slug}/ 目录。\n\n请执行：\n1. 下载并解压该压缩包\n2. 将 ${skill.slug}/ 目录放到 ~/.claude/skills/ 下\n3. 再复制一份到 ~/.agents/skills/ 下（Codex / Cursor 使用）\n4. 不要修改文件内容，完成后告诉我已安装的位置`;
+
+  const copyInstall = async (text: string, key: string) => {
+    setCopied(prev => ({ ...prev, [key]: false }));
     setError("");
     try {
-      await copyText(installCommand);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      await copyText(text);
+      setCopied(prev => ({ ...prev, [key]: true }));
+      setTimeout(() => setCopied(prev => ({ ...prev, [key]: false })), 2000);
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -96,21 +105,18 @@ echo "已安装，重启 Claude Code / Codex 后生效"`;
             {data && (
               <div className="rounded-xl border border-orange-200 bg-white p-5 shadow-sm">
                 <div className="mb-3 flex items-center justify-between gap-3">
-                  <h2 className="font-semibold">一键复制下载安装指令</h2>
+                  <h2 className="font-semibold">复制给 Agent 的全部安装请求</h2>
                   <button
                     type="button"
-                    onClick={copyInstall}
+                    onClick={() => copyInstall(bundleAgentPrompt, "all")}
                     className="inline-flex items-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-orange-600"
                   >
-                    {copied ? <Check size={16} /> : <Copy size={16} />}
-                    {copied ? "已复制" : "复制安装指令"}
+                    {copied.all ? <Check size={16} /> : <Copy size={16} />}
+                    {copied.all ? "已复制" : "复制给 Agent"}
                   </button>
                 </div>
-                <pre className="whitespace-pre-wrap break-all rounded-lg bg-slate-50 p-4 text-xs leading-relaxed text-slate-700">{installCommand}</pre>
-                <p className="mt-3 text-xs text-slate-500">
-                  安装目录：<code className="rounded bg-slate-100 px-1">~/.claude/skills</code>（Claude Code / Cursor）与
-                  <code className="rounded bg-slate-100 px-1">~/.agents/skills</code>（Codex / GitHub Copilot）。重启 Agent 后生效。
-                </p>
+                <pre className="whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-4 text-xs leading-relaxed text-slate-700">{bundleAgentPrompt}</pre>
+                <p className="mt-3 text-xs text-slate-500">复制后粘贴给 Claude Code、Codex、Cursor 或其他 Agent，由 Agent 自动下载并安装到对应技能目录。</p>
                 <p className="mt-1 text-xs text-red-600">{error}</p>
               </div>
             )}
@@ -147,6 +153,14 @@ echo "已安装，重启 Claude Code / Codex 后生效"`;
                             <a href={skill.downloadUrl} className="inline-flex items-center gap-1 text-slate-500 hover:text-slate-800">
                               <Download size={13} /> 单个下载
                             </a>
+                            <button
+                              type="button"
+                              onClick={() => copyInstall(skillAgentPrompt(skill), skill.slug)}
+                              className="inline-flex items-center gap-1 text-slate-500 hover:text-orange-700"
+                            >
+                              {copied[skill.slug] ? <Check size={13} /> : <Copy size={13} />}
+                              {copied[skill.slug] ? "已复制" : "复制给 Agent"}
+                            </button>
                           </div>
                         </article>
                       ))}
